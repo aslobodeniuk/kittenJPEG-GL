@@ -10,6 +10,7 @@
 This is kittenJPEG, a minimalistic Baseline JPEG-decoder / JPG-file-reader
 
 (c) 2022 by kittennbfive
+(c) 2026 by Sasha
 
 AGPLv3+ AND NO WARRANTY!
 
@@ -20,18 +21,8 @@ Caution: Depending on the uncommented #define and your input file this tool can 
 version 3 - 20.11.22
 */
 
-//#define PRINT_DETAILS_HUFFMAN_TABLES
-
-//#define PRINT_DETAILS_QUANTTABLES
-
+#define PRINT_DETAILS_QUANTTABLES
 //#define PRINT_DETAILS_BITSTREAM_LOOP_POSITION
-//#define PRINT_DETAILS_BITSTREAM_DECODED_DC
-//#define PRINT_DETAILS_BITSTREAM_DECODED_AC
-//#define PRINT_DETAILS_BITSTREAM_MATRIX_ZZ
-//#define PRINT_DETAILS_BITSTREAM_MATRIX_DEQUANT
-//#define PRINT_DETAILS_BITSTREAM_MATRIX_DECODED
-
-//#define PRINT_DETAILS_HUFFMAN_BITSTREAM
 
 const char * comp_names[3]={"Y","Cb","Cr"};
 
@@ -414,270 +405,6 @@ void parse_DQT(picture_t * const pic)
 	printf("\n");
 }
 
-
-
-int16_t convert_to_neg(uint16_t bits, const uint8_t sz)
-{
-	int16_t ret=-((bits^0xFFFF)&((1<<sz)-1));
-	return ret;
-}
-
-
-uint16_t bitstream_get_bits(picture_t * const pic, const uint_fast8_t nb_bits)
-{
-	if(nb_bits>16)
-		errx(1, "bitstream_get_bits: >16 bits requested");
-	
-	uint_fast32_t index=pic->bitpos_in_compressed_pixeldata/8;
-	int_fast8_t pos_in_byte=(7-pic->bitpos_in_compressed_pixeldata%8);
-	uint16_t ret=0;
-	uint_fast8_t bits_copied=0;
-	
-	while(pos_in_byte>=0 && bits_copied<nb_bits)
-	{
-		ret<<=1;
-		ret|=!!(pic->compressed_pixeldata[index]&(1<<pos_in_byte));
-		bits_copied++;
-		pos_in_byte--;
-		if(pos_in_byte<0)
-		{
-			pos_in_byte=7;
-			index++;
-		}
-	}
-	
-	return ret;	
-}
-
-void bitstream_remove_bits(picture_t * const pic, const uint_fast8_t nb_bits)
-{
-	pic->bitpos_in_compressed_pixeldata+=nb_bits;
-}
-
-
-bool huff_decode(picture_t * const pic, const uint8_t Tc, const uint8_t Th, const uint8_t sz, const uint16_t bitstream, uint8_t * const decoded)
-{
-	uint32_t i;
-	
-	for(i=0; i<pic->huff_tables[Tc][Th].nb_entries; i++)
-	{
-		if(pic->huff_tables[Tc][Th].entries[i].sz==sz && pic->huff_tables[Tc][Th].entries[i].codeword==bitstream)
-		{
-			(*decoded)=pic->huff_tables[Tc][Th].entries[i].decoded;
-			return true;
-		}
-	}
-	
-	return false;
-}
-
-
-bool bitstream_get_next_decoded_element(picture_t * const pic, const uint8_t Tc, const uint8_t Th, uint8_t * const decoded, uint_fast8_t * const nb_bits)
-{
-	uint16_t huff_candidate;
-	bool found;
-	
-	while(pic->bitpos_in_compressed_pixeldata<8*pic->sz_compressed_pixeldata)
-	{
-		found=false;
-		for(*nb_bits=1; *nb_bits<=16; (*nb_bits)++)
-		{
-			if((pic->bitpos_in_compressed_pixeldata+*nb_bits)>8*pic->sz_compressed_pixeldata)
-				errx(1, "end of stream, requested to many bits");
-			
-			huff_candidate=bitstream_get_bits(pic, *nb_bits);
-			
-			if(huff_decode(pic, Tc, Th, *nb_bits, huff_candidate, decoded))
-			{
-				found=true;
-				bitstream_remove_bits(pic, *nb_bits);
-#ifdef PRINT_DETAILS_HUFFMAN_BITSTREAM
-				printf("bitstream: decoded Huffman code %s (0x%x) (sz %u bits): %u (0x%x), new bitpos is %lu\n", to_bin(huff_candidate, *nb_bits), huff_candidate, *nb_bits, *decoded, *decoded, pic->bitpos_in_compressed_pixeldata);
-#endif
-				return true;
-			}
-		}
-		if(!found)
-		{
-			//check if it's padding, else error
-			bool is_all_one=true;
-			uint_fast8_t i;
-			for(i=0; i<(*nb_bits)-1; i++)
-			{
-				if((huff_candidate&(1<<i))==0)
-				{
-					is_all_one=false;
-					break;
-				}
-			}
-			
-			if(is_all_one) //padding
-				bitstream_remove_bits(pic, *nb_bits);
-			else
-				errx(1, "unknown code in bitstream bitpos %lu byte 0x%x [prev 0x%x, next 0x%x]", pic->bitpos_in_compressed_pixeldata, pic->compressed_pixeldata[pic->bitpos_in_compressed_pixeldata/8], pic->compressed_pixeldata[(pic->bitpos_in_compressed_pixeldata/8)-1], pic->compressed_pixeldata[(pic->bitpos_in_compressed_pixeldata/8)+1]);
-		}
-	}
-
-	return false;
-}
-
-
-void store_data_unit_YCbCr(picture_t * const pic, const uint_fast32_t MCU, const uint_fast8_t component, const uint_fast8_t data_unit, const matrix8x8_t data)
-{
-	uint_fast8_t zoomX, zoomY;
-	
-	zoomX=pic->Hmax/pic->components_data[component].H;
-	zoomY=pic->Vmax/pic->components_data[component].V;
-	
-	uint_fast8_t scaleX, scaleY;
-	
-	scaleX=8*pic->components_data[component].H;
-	scaleY=8*pic->components_data[component].V;
-	
-	uint_fast16_t startX, startY;
-	
-	startX=MCU%(ceil_to_multiple_of(pic->size_X, 8*pic->Hmax)/(scaleX*zoomX));
-	startY=MCU/(ceil_to_multiple_of(pic->size_X, 8*pic->Hmax)/(scaleY*zoomY)); //yes, size_X and H!
-	
-	uint_fast16_t startHiX=data_unit%pic->components_data[component].H;
-	uint_fast16_t startHiY=data_unit/pic->components_data[component].H; //yes, H!
-	
-	uint_fast8_t x,y;
-	uint_fast8_t zx,zy;
-	
-	uint_fast32_t posX, posY;
-	
-	for(x=0; x<8; x++)
-	{
-		for(y=0; y<8; y++)
-		{
-			for(zx=0; zx<zoomX; zx++)
-			{
-				for(zy=0; zy<zoomY; zy++)
-				{
-					posX=(scaleX*startX+8*startHiX+x)*zoomX+zx;
-					posY=(scaleY*startY+8*startHiY+y)*zoomY+zy;
-					
-					if(posX<pic->size_X && posY<pic->size_Y)
-					{			
-						switch(component)
-						{
-							case 0: pic->pixels_YCbCr[posX][posY].Y=data[x][y]; break;
-							case 1: pic->pixels_YCbCr[posX][posY].Cb=data[x][y]; break;
-							case 2: pic->pixels_YCbCr[posX][posY].Cr=data[x][y]; break;
-							default: errx(1, "unknown component"); break;
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-
-void reverse_ZZ_and_dequant(picture_t const * const pic, const uint8_t quant_table, const matrix8x8_t inp, matrix8x8_t outp)
-{
-	const uint_fast8_t reverse_ZZ_u[8][8]={	{0, 0, 1, 2, 1, 0, 0, 1 },
-											{2, 3, 4, 3, 2, 1, 0, 0 },
-											{1, 2, 3, 4, 5, 6, 5, 4 },
-											{3, 2, 1, 0, 0, 1, 2, 3 },
-											{4, 5, 6, 7, 7, 6, 5, 4 },
-											{3, 2, 1, 2, 3, 4, 5, 6 },
-											{7, 7, 6, 5, 4, 3, 4, 5 },
-											{6, 7, 7, 6, 5, 6, 7, 7 }	};
-										
-	const uint_fast8_t reverse_ZZ_v[8][8]={	{0, 1, 0, 0, 1, 2, 3, 2 },
-											{1, 0, 0, 1, 2, 3, 4, 5 },
-											{4, 3, 2, 1, 0, 0, 1, 2 },
-											{3, 4, 5, 6, 7, 6, 5, 4 },
-											{3, 2, 1, 0, 1, 2, 3, 4 },
-											{5, 6, 7, 7, 6, 5, 4, 3 },
-											{2, 3, 4, 5, 6, 7, 7, 6 },
-											{5, 4, 5, 6, 7, 7, 6, 7 }	};
-	
-	uint_fast8_t u,v;
-	
-	for(u=0; u<8; u++)
-		for(v=0; v<8; v++)
-			outp[reverse_ZZ_u[u][v]][reverse_ZZ_v[u][v]]=inp[u][v]*pic->quant_tables[quant_table][u][v];
-}
-
-
-void data_unit_do_idct(const matrix8x8_t inp, matrix8x8_t outp)
-{
-	double sxy=0;
-	
-	uint_fast8_t x, y;
-	uint_fast8_t u, v;
-	
-	const double C[8]={1.0/sqrt(2.0), 1, 1, 1, 1, 1, 1, 1};
-	
-	for(y=0; y<8; y++)
-	{
-		for(x=0; x<8; x++)
-		{
-			sxy=0;
-			for(u=0; u<=7; u++)
-			{
-				for(v=0; v<=7; v++)
-				{
-					double Svu=inp[v][u]; //index order!
-					sxy+=C[u]*C[v]*Svu*cos(((2.0*x+1.0)*u*M_PI)/16.0)*cos(((2.0*y+1.0)*v*M_PI)/16.0);
-				}
-			}
-			
-			sxy*=0.25;
-			sxy+=128;
-			outp[x][y]=sxy;
-		}
-	}
-}
-
-
-uint8_t clamp(const double v)
-{
-	if(v<0)
-		return 0;
-	if(v>255)
-		return 255;
-	
-	return (uint8_t)v;
-}
-
-void write_ppm(picture_t const * const pic, char const * const filename)
-{
-	uint_fast16_t x,y;
-	
-	double Y,Cb,Cr;
-	double r,g,b;
-	
-	FILE *out=fopen(filename, "w");
-	
-	printf("writing file %s\n", filename);
-	
-	fprintf(out, "P3\n%lu %lu\n255\n", pic->size_X, pic->size_Y);
-		
-	for(y=0; y<pic->size_Y; y++)
-	{
-		for(x=0; x<pic->size_X; x++)
-		{
-			Y=pic->pixels_YCbCr[x][y].Y;
-			Cb=pic->pixels_YCbCr[x][y].Cb;
-			Cr=pic->pixels_YCbCr[x][y].Cr;
-			
-			r=Y+1.402*(Cr-128);
-			g=Y-(0.114*1.772*(Cb-128)+0.299*1.402*(Cr-128))/0.587;
-			b=Y+1.772*(Cb-128);
-			
-			fprintf(out, "%u %u %u ", clamp(round(r)),clamp(round(g)),clamp(round(b)));
-		}
-		fprintf(out, "\n");
-	}
-	fclose(out);
-	printf("output file written\n\n");
-}
-
-
 void open_new_picture(char const * const name, picture_t * const picture)
 {
 	FILE *f=fopen(name, "rb");
@@ -787,22 +514,53 @@ void copy_bitmap_data_remove_stuffing(picture_t * const pic)
 	printf("%lu data bytes without stuffing\n\n", size_without_stuffing);
 }
 
-void parse_bitmap_data(picture_t * const pic)
+#include "pg.h"
+#include "do_the_rest.h"
+#include "Huffman.h"
+#include "kitten-gl.h"
+#include "ppm.h"
+
+void parse_bitmap_data(picture_t * const pic, PGCtx *pg)
 {
 	printf("parsing bitstream...\n");
 	
-	uint_fast8_t nb_bits;
 	uint_fast8_t component=0; //Cs
 	uint_fast8_t data_unit;
-	uint_fast8_t u,v;
-	uint_fast8_t ac_count;
+  uint_fast8_t u,v;
 	
 	int16_t precedent_DC[4]={0,0,0,0};
 	
 	uint_fast32_t nb_MCU=0;
 
 	matrix8x8_t matrix;
-	
+
+  // PG ----------------------------
+  pg->aligned[0].w = ceil_to_multiple_of (pic->size_X, 8);
+  pg->aligned[0].h = ceil_to_multiple_of (pic->size_Y, 8);
+  pg->aligned[1].w = ceil_to_multiple_of (pic->size_X, 8) / 2;
+  pg->aligned[1].h = ceil_to_multiple_of (pic->size_Y, 8) / 2;
+  pg->aligned[2].w = ceil_to_multiple_of (pic->size_X, 8) / 2;
+  pg->aligned[2].h = ceil_to_multiple_of (pic->size_Y, 8) / 2;
+
+  kitten_dump = (float*)malloc (pg->aligned[0].w * pg->aligned[0].h  * sizeof (float));
+  
+  for (int gg= 0; gg < 3; gg++) {
+    int mcu_size = pic->components_data[gg].V*pic->components_data[gg].H;
+    int totsize = mcu_size * pic->nb_MCU_total * 64;
+
+    printf ("[%d] MCU SIZE = %d, TOT SIZE = %d, aligned w = %d, aligned h = %d\n",
+        gg, mcu_size, totsize, pg->aligned[gg].w, pg->aligned[gg].h);
+
+    pg->data[gg] = malloc (sizeof (float) * totsize);
+    pg->pos[gg] = 0;
+
+    // only 2 quant tables on input, but 3 that we use
+    int tq = gg > 0 ? 1 : 0;
+
+    PG_COPY_QTABL (pg, gg, pic->quant_tables[tq]);
+  }
+  // ------------------------------
+  
 	for(nb_MCU=0; nb_MCU<pic->nb_MCU_total; nb_MCU++)
 	{
 		for(component=0; component<pic->nb_components; component++)
@@ -815,127 +573,16 @@ void parse_bitmap_data(picture_t * const pic)
 				for(u=0; u<8; u++)
 					for(v=0; v<8; v++)
 						matrix[u][v]=0;
-				
-				uint8_t SSSS;
-				int16_t DC;
-				if(!bitstream_get_next_decoded_element(pic, 0, pic->components_data[component].Td, &SSSS, &nb_bits))
-					errx(1, "no DC data");
-				
-				if(SSSS)
-				{
-					uint16_t bits_DC=bitstream_get_bits(pic, SSSS);
-					bitstream_remove_bits(pic, SSSS);
-					
-					bool msb_DC=!!(bits_DC&(1<<(SSSS-1)));
-					
-					if(msb_DC)
-						DC=precedent_DC[component]+bits_DC;
-					else
-						DC=precedent_DC[component]+convert_to_neg(bits_DC,SSSS);
-					
-				}
-				else
-					DC=precedent_DC[component]+0;
-				
-				matrix[0][0]=DC;
-				precedent_DC[component]=DC;
-				
-#ifdef PRINT_DETAILS_BITSTREAM_DECODED_DC
-				printf("decoded DC: %d\n", DC);
-#endif
-				int16_t AC;
-				for(ac_count=0; ac_count<63; )
-				{
-					uint8_t RRRRSSSS;
-					if(!bitstream_get_next_decoded_element(pic, 1, pic->components_data[component].Ta, &RRRRSSSS, &nb_bits))
-						errx(1, "no AC data");
-					
-					uint8_t RRRR=(RRRRSSSS>>4); //number of preceding 0 samples
-					uint8_t SSSS=RRRRSSSS&0x0f; //category
-					
-					if(RRRR==0 && SSSS==0)
-					{
-#ifdef PRINT_DETAILS_BITSTREAM_DECODED_AC
-						printf("EOB, %u AC values decoded\n", ac_count);
-#endif
-						break;
-					}
-					else if(RRRR==0x0F && SSSS==0)
-					{
-						ac_count+=16;
-#ifdef PRINT_DETAILS_BITSTREAM_DECODED_AC
-						printf("ZRL, new AC count %u\n", ac_count);
-#endif
-					}
-					else
-					{
-						ac_count+=RRRR;
-						
-						uint16_t bits_AC=bitstream_get_bits(pic, SSSS);
-						bitstream_remove_bits(pic, SSSS);
-						
-						bool msb_AC=!!(bits_AC&(1<<(SSSS-1)));
-						
-						if(msb_AC)
-							AC=bits_AC;
-						else
-							AC=convert_to_neg(bits_AC,SSSS);
-						
-						u=(ac_count+1)/8;
-						v=(ac_count+1)%8;
-						matrix[u][v]=AC;
-						ac_count++;
-#ifdef PRINT_DETAILS_BITSTREAM_DECODED_AC
-						printf("decoded AC: %d (%u vals)\n", AC, ac_count);
-#endif
-					}
-				}
-#ifdef PRINT_DETAILS_BITSTREAM_MATRIX_ZZ
-				printf("raw matrix (ZZ-order):\n");
-				for(u=0; u<8; u++)
-				{
-					for(v=0; v<8; v++)
-						printf("%5f ", matrix[u][v]);
-					printf("\n");
-				}
-				printf("\n");
-#endif
-				matrix8x8_t matrix_dequant;
-				
-				reverse_ZZ_and_dequant(pic, pic->components_data[component].Tq, matrix, matrix_dequant);
 
-#ifdef PRINT_DETAILS_BITSTREAM_MATRIX_DEQUANT
-				printf("matrix (ZZ reversed and dequantized):\n");
-				for(u=0; u<8; u++)
-				{
-					for(v=0; v<8; v++)
-						printf("%5f ", matrix_dequant[u][v]);
-					printf("\n");
-				}
-				printf("\n");
-#endif
-
-				matrix8x8_t matrix_decoded;
-				
-				data_unit_do_idct(matrix_dequant, matrix_decoded);
-#ifdef PRINT_DETAILS_BITSTREAM_MATRIX_DECODED
-				printf("matrix (after IDCT):\n");
-				for(u=0; u<8; u++)
-				{
-					for(v=0; v<8; v++)
-						printf("%5f ", matrix_decoded[u][v]);
-					printf("\n");
-				}
-				printf("\n");
-#endif
-				store_data_unit_YCbCr(pic, nb_MCU, component, data_unit, matrix_decoded);
+        HAFFMANN_2MATREX (matrix, pic, component, precedent_DC);
+        MATREX_2PG (pg, matrix, component);
 			}
 		}
 	}
 	printf("parsed %lu MCU\n", nb_MCU);
 }
 
-void parse_picture(picture_t * const picture)
+void parse_picture(picture_t * const picture, PGCtx *pg)
 {
 	while(picture->pos_in_file<=picture->filesize-2)
 	{
@@ -955,7 +602,7 @@ void parse_picture(picture_t * const picture)
 			case 0xFFC4:	parse_DHT(picture); break;
 			case 0xFFDA:	parse_SOS(picture);
 							copy_bitmap_data_remove_stuffing(picture);
-							parse_bitmap_data(picture);
+              parse_bitmap_data(picture, pg);
 							break;
 			
 			case 0xFFD9:	printf("EOI found\n"); break;
@@ -966,18 +613,23 @@ void parse_picture(picture_t * const picture)
 	}
 }
 
-
 int main(void)
 {
+  PGCtx pg;
 	picture_t pic;
 	
-	open_new_picture("kitten.jpg", &pic);
+	open_new_picture("kit512.jpg", &pic);
 	
-	parse_picture(&pic);
-	
+	parse_picture(&pic, &pg);
+
+#if 0
+  DO_THE_REST (&pic, &pg); // from mcus of symbols to a pic
 	write_ppm(&pic, "kitten.ppm");
-	
 	close_picture(&pic);
-	
+#endif
+
+  kitten_gl_show (&pg);
+
+  printf("exit nicely\n");
 	return 0;
 }
