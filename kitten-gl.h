@@ -4,25 +4,14 @@
    Version 69
 */
 
-// Compile with: gcc kittenJPEG.c -lglfw -lGL -lGLEW -lm -o kit
+// Compile with: gcc kittenJPEG.c -lX11 -lEGL -lGLESv2 -lm -o kit
 
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 
-const float losslessQuant[64] = {
-  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0
-};
+#include "pg-window.h"
 
 const char* vertexPassThrough = "#version 300 es\n"
 "layout (location = 0) in vec2 pos;\n"
@@ -35,8 +24,8 @@ const char* vertexPassThrough = "#version 300 es\n"
 
 static const char * fragmentPassThrough =
     "#version 300 es\n"
-    "precision highp float;\n"
-    "precision highp int;\n"
+    "precision lowp float;\n"
+    "precision lowp int;\n"
     "in vec2 texCoord;\n"
     "out vec4 fragColor;\n"
     "uniform sampler2D rgbTex;\n"
@@ -46,8 +35,8 @@ static const char * fragmentPassThrough =
 
 static const char * zigzagToDCT =
     "#version 300 es\n"
-    "precision highp float;\n"
-    "precision highp int;\n"
+    "precision lowp float;\n"
+    "precision lowp int;\n"
     "in vec2 texCoord;\n"
     "out vec4 fragColor;\n"
     "uniform sampler2D zigzagInpP;\n"
@@ -83,8 +72,8 @@ static const char * zigzagToDCT =
     "}\n";
 
 const char* DCTtoP = "#version 300 es\n"
-    "precision highp float;\n"
-    "precision highp int;\n"
+    "precision lowp float;\n"
+    "precision lowp int;\n"
     "out vec4 fragColor;\n"
     "uniform sampler2D dctInpP;\n"
     "const float M_PI = 3.14159265358979323846;\n"
@@ -125,8 +114,8 @@ const char* DCTtoP = "#version 300 es\n"
 
 const char* YUVtoRGB = 
 "#version 300 es\n"
-    "precision highp float;\n"
-    "precision highp int;\n"
+    "precision lowp float;\n"
+    "precision lowp int;\n"
     "out vec4 fragColor;\n"
     "uniform sampler2D yuvInpY;\n"
     "uniform sampler2D yuvInpU;\n"
@@ -191,7 +180,6 @@ const char* YUVtoRGB =
     // fixme: add uniforms for uH uV and vH vV
    "    float u = texelFetch(yuvInpU, ivec2(inPixelCb.x, inPixelCb.y), 0).r;\n"
    "    float v = texelFetch(yuvInpV, ivec2(inPixelCr.x, inPixelCr.y), 0).r;\n"
-//    " float u = 128.0; float v = 128.0;\n"
     "    fragColor = yuv_to_rgb (yy, u - 128.0, v - 128.0);\n"
     "}\n";
 
@@ -319,25 +307,6 @@ GLuint rf_create_shader_program (const char *vertex, const char *fragment, RFUni
   return shader;
 }
 
-GLFWwindow* rf_create_window (int w, int h)
-{
-  if (!glfwInit()) {
-    printf("wtf: glfwInit\n");
-    exit (1);
-  }
-
-  GLFWwindow* window = glfwCreateWindow(w, h, "JPEG Decoder Shader", NULL, NULL);
-  if (!window) {
-    exit (1);
-    printf("kudnt window\n");
-  }
-  glfwMakeContextCurrent(window);
-  glewInit();
-
-  printf ("GL: %s\n", glGetString(GL_VERSION));
-  return window;
-}
-
 void rf_use_shader_program (GLenum tt, GLuint shader, RFUniform *unis)
 {
   glUseProgram(shader);
@@ -386,7 +355,9 @@ RFFb rf_make_framebuffer (GLenum format, int width, int height)
   
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, ret.texture, 0);
+  glFramebufferTexture2D(GL_FRAMEBUFFER,
+      GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ret.texture, 0);
+//  glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, ret.texture, 0);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glBindTexture(GL_TEXTURE_2D, 0);
   
@@ -459,93 +430,13 @@ pg_draw_step_draw (PGDrawStep * ds, GLuint vao) {
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-static inline float
-half_to_float (unsigned short h)
-{
-    unsigned int sign = (unsigned int)(h & 0x8000u) << 16;
-    unsigned int exp  = (h >> 10) & 0x1Fu;
-    unsigned int mant =  h & 0x03FFu;
-
-    unsigned int f;
-
-    if (exp == 0)
-    {
-        if (mant == 0)
-        {
-            // ±0
-            f = sign;
-        }
-        else
-        {
-            // subnormal -> normalize
-            exp = 1;
-            while ((mant & 0x0400u) == 0) { mant <<= 1; exp--; }
-            mant &= 0x03FFu;
-
-            unsigned int exp32  = (exp + (127 - 15)) << 23;
-            unsigned int mant32 = mant << 13;
-            f = sign | exp32 | mant32;
-        }
-    }
-    else if (exp == 31)
-    {
-        // Inf/NaN
-        f = sign | 0x7F800000u | (mant << 13);
-    }
-    else
-    {
-        // normal
-        unsigned int exp32  = (exp + (127 - 15)) << 23;
-        unsigned int mant32 = mant << 13;
-        f = sign | exp32 | mant32;
-    }
-
-    float out;
-    memcpy(&out, &f, sizeof(out));
-    return out;
-}
-
-static int
-pg_texture_dump (GLuint tex, int w, int h, const char *hey) {
-  return;
-  int size = w * h * 4 * 3;
-  unsigned char *data = malloc (size);
-  
-  glBindTexture(GL_TEXTURE_2D, tex);
-  glGetTexImage(GL_TEXTURE_2D, 0,
-      GL_RGB, //GL_RED,
-      GL_UNSIGNED_BYTE, //GL_HALF_FLOAT,
-      data);
-  
-//  gl_dump = (float*)malloc (sizeof (float) * w * h);
-  
-//  printf ("%s { \n", hey);
-  printf ("P3\n%lu %lu\n255\n", w, h);
-  for (int i = 0; i < w * h * 3; i++) {
-    if (i % (h * 3) == 0)
-      printf ("\n ");
-    
-    //float f = half_to_float (data[i]);
-    printf ("%u ", data[i]);
-
-//    gl_dump[i] = f;
-
-    /* if (fabs (f - kitten_dump[i]) > 0.2) */
-    /*   printf ("DIFF[%i][%i]: gl(%g) != kitten(%g)\n", i % w, i / w, f, kitten_dump[i]); */
-  }
-
-  free (data);
-
-  
-}
-
-static int
-pg_draw_step_dump (PGDrawStep * ds, const char *hey) {
-  pg_texture_dump (ds->framebuffer.texture, ds->init.w, ds->init.h, hey);
-}
-
 void kitten_gl_show (PGCtx *pg) {
-  GLFWwindow* window = rf_create_window (1024, 1024);
+  PGX11Window pgw;
+  // Split to things?
+  pg_window_open_x11 (&pgw, 1024, 1024, "JPEG decoder shader");
+  pg_window_bind_context_egl (&pgw);
+  
+  printf ("GL: %s\n", glGetString(GL_VERSION));
 
   /* On the input we have a stream of blox: [64pix][64pix][64pix]...
    * No wonder we crave like (w,h) aligned to 64, such as 512. */
@@ -689,16 +580,13 @@ void kitten_gl_show (PGCtx *pg) {
     // hapi
     NULL
   };
-  while (!glfwWindowShouldClose(window)) {
 
+  while (pg_window_loop (&pgw)) {
     for (int i = 0; drawen[i] != NULL; i++)
       pg_draw_step_draw (drawen[i], vao);
     
-    glfwSwapBuffers(window);
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glfwPollEvents();
+    pg_window_swap_buffers (&pgw);
   }
 
-  glfwTerminate();
+  pg_window_close_x11 (&pgw);
 }

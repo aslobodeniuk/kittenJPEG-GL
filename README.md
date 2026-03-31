@@ -26,7 +26,7 @@ The example picture `kitten.jpg` (and its resized version `kitten_small.jpg`) wa
 
 ### Compilen
 
-`gcc kittenJPEG.c -lglfw -lGL -lGLEW -lm -o kit`
+`gcc kittenJPEG.c -lX11 -lEGL -lGLESv2 -lm -o kit`
 
 ### Runen
 
