@@ -120,6 +120,8 @@ const char* YUVtoRGB =
     "uniform sampler2D yuvInpY;\n"
     "uniform sampler2D yuvInpU;\n"
     "uniform sampler2D yuvInpV;\n"
+    "uniform int       outWidth;\n"
+    "uniform int       outHeight;\n"
     "    vec4 yuv_to_rgb (float y, float u, float v)\n"
     "    {\n"
     "      float r = y + 1.402 * v;\n"
@@ -149,16 +151,15 @@ const char* YUVtoRGB =
     "        int out_bpl = out_width / 8;\n"
 
     // COP ----
-"int mcu_per_row = out_width / 16;\n"
-"int mcu_x = x / 16;\n"
-"int mcu_y = y / 16;\n"
-"int mcu_id = mcu_y * mcu_per_row + mcu_x;\n"
-"int sub_x = (x / 8) & 1;\n"
-"int sub_y = (y / 8) & 1;\n"
-"int y_sub_id = sub_y * 2 + sub_x;\n"
-"int block_id = mcu_id * 4 + y_sub_id;\n"
+    "        int mcu_per_row = out_width / 16;\n"
+    "        int mcu_x = x / 16;\n"
+    "        int mcu_y = y / 16;\n"
+    "        int mcu_id = mcu_y * mcu_per_row + mcu_x;\n"
+    "        int sub_x = (x / 8) & 1;\n"
+    "        int sub_y = (y / 8) & 1;\n"
+    "        int y_sub_id = sub_y * 2 + sub_x;\n"
+    "        int block_id = mcu_id * 4 + y_sub_id;\n"
     // -------
-//    "        int block_id = (y / 8) * out_bpl + x / 8;\n"
     "        int in_bpl = in_width / 64;\n"
     "        int in_by = block_id / in_bpl;\n"
     "        int in_bx = (block_id % in_bpl) * 64;\n"
@@ -172,10 +173,11 @@ const char* YUVtoRGB =
     "void main() {\n"
     "    int width = textureSize (yuvInpY, 0).x;\n"
     "    int height = textureSize (yuvInpY, 0).y;\n"
+    
     "    ivec2 outPixel = ivec2(gl_FragCoord.xy);\n"
-    "    ivec2 inPixelY = remap_coordsY ((outPixel.x), (height - outPixel.y - 1), width, width);\n"
-    "    ivec2 inPixelCr = remap_coords ((outPixel.x) / 2, (height - outPixel.y - 1) / 2, width / 2, width / 2);\n"
-    "    ivec2 inPixelCb = remap_coords ((outPixel.x) / 2, (height - outPixel.y - 1) / 2, width / 2, width / 2);\n"
+    "    ivec2 inPixelY = remap_coordsY (outPixel.x, (outHeight - outPixel.y - 1), width, outWidth);\n"
+    "    ivec2 inPixelCr = remap_coords (outPixel.x / 2, (outHeight - outPixel.y - 1) / 2, width / 2, outWidth / 2);\n"
+    "    ivec2 inPixelCb = remap_coords (outPixel.x / 2, (outHeight - outPixel.y - 1) / 2, width / 2, outWidth / 2);\n"
     "    float yy = texelFetch(yuvInpY, inPixelY, 0).r;\n"
     // fixme: add uniforms for uH uV and vH vV
    "    float u = texelFetch(yuvInpU, ivec2(inPixelCb.x, inPixelCb.y), 0).r;\n"
@@ -535,14 +537,16 @@ void kitten_gl_show (PGCtx *pg) {
   
   PGDrawStep yuv_to_rgb = {
     .init = {
-      .w = pg->aligned[0].w,
-      .h = pg->aligned[0].h,
+      .w = pg->proper.w,
+      .h = pg->proper.h,
       .output_format = GL_RGB,
       .shader_code = YUVtoRGB,
       .unis = {
         { "yuvInpY", dct_to_y.framebuffer.texture, PG_TEXTURE },
         { "yuvInpU", dct_to_u.framebuffer.texture, PG_TEXTURE },
         { "yuvInpV", dct_to_v.framebuffer.texture, PG_TEXTURE },
+        { "outWidth", pg->proper.w, PG_INT },
+        { "outHeight", pg->proper.h, PG_INT },
         { NULL }
       }
     }};

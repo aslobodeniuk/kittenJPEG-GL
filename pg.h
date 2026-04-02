@@ -5,10 +5,20 @@ typedef struct {
   int pos[3];
   struct {
     int w, h;
-  } aligned [3];
-
+  } aligned [3], proper;
+  
   float qtable[3][64];
 } PGCtx;
+
+static void
+pg_set_component_dimensions (PGCtx *pg, int component)
+{
+  int dH = component == 0 ? 1 : 2; // FIXME: Hmax, Vmax, H, V
+  int space = pg->proper.w * pg->proper.h;
+  
+  pg->aligned[component].w = ceil_to_multiple_of ((pg->proper.w + dH - 1) / dH, 64);
+  pg->aligned[component].h = ceil_to_multiple_of (((space + pg->aligned[component].w - 1) / pg->aligned[component].w), 2) / dH;
+}
 
 static void PG_2MATREX (matrix8x8_t matrix, PGCtx *pg, int component) {
   int u, v;

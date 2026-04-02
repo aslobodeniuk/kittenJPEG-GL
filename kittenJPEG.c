@@ -535,12 +535,14 @@ void parse_bitmap_data(picture_t * const pic, PGCtx *pg)
 	matrix8x8_t matrix;
 
   // PG ----------------------------
-  pg->aligned[0].w = ceil_to_multiple_of (pic->size_X, 8);
-  pg->aligned[0].h = ceil_to_multiple_of (pic->size_Y, 8);
-  pg->aligned[1].w = ceil_to_multiple_of (pic->size_X, 8) / 2;
-  pg->aligned[1].h = ceil_to_multiple_of (pic->size_Y, 8) / 2;
-  pg->aligned[2].w = ceil_to_multiple_of (pic->size_X, 8) / 2;
-  pg->aligned[2].h = ceil_to_multiple_of (pic->size_Y, 8) / 2;
+  pg->proper.w = ceil_to_multiple_of (pic->size_X, 16);
+  pg->proper.h = ceil_to_multiple_of (pic->size_Y, 16);
+  printf ("IMAGE W = %d, H = %d\n",
+      pg->proper.w, pg->proper.h);
+
+  pg_set_component_dimensions (pg, 0);
+  pg_set_component_dimensions (pg, 1);
+  pg_set_component_dimensions (pg, 2);
 
   kitten_dump = (float*)malloc (pg->aligned[0].w * pg->aligned[0].h  * sizeof (float));
   
@@ -618,7 +620,7 @@ int main(void)
   PGCtx pg;
 	picture_t pic;
 	
-	open_new_picture("kit512.jpg", &pic);
+	open_new_picture("kitten_small.jpg", &pic);
 	
 	parse_picture(&pic, &pg);
 
