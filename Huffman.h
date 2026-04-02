@@ -14,7 +14,7 @@ Caution: Depending on the uncommented #define and your input file this tool can 
 version 3 - 20.11.22
 */
 
-//#define PRINT_DETAILS_HUFFMAN_TABLES
+//#define PRINT_DETAILS_HUFFMAN_BITSTREAM
 
 int16_t convert_to_neg(uint16_t bits, const uint8_t sz)
 {

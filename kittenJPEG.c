@@ -23,6 +23,7 @@ version 3 - 20.11.22
 
 #define PRINT_DETAILS_QUANTTABLES
 //#define PRINT_DETAILS_BITSTREAM_LOOP_POSITION
+//#define PRINT_DETAILS_HUFFMAN_TABLES
 
 const char * comp_names[3]={"Y","Cb","Cr"};
 
@@ -290,48 +291,52 @@ void parse_DHT(picture_t * const pic)
 {
 	uint16_t len=get2i(pic->data, &(pic->pos_in_file));
 	printf("DHT found (length %u bytes)\n", len);
-	
-	uint8_t TcTh=get1i(pic->data, &(pic->pos_in_file));
-	uint8_t Tc=(TcTh>>4)&0x0f;
-	uint8_t Th=TcTh&0x0f;
-	
-	printf("Tc %u (%s table)\n", Tc, (Tc==0)?"DC":"AC");
-	printf("Th (table destination identifier) %u\n", Th);
-	
-	uint8_t L[16];
-	uint8_t mt=0;
-	uint8_t i;
-	for(i=0; i<16; i++)
-	{
-		L[i]=get1i(pic->data, &(pic->pos_in_file));
-		mt+=L[i];
-#ifdef PRINT_DETAILS_HUFFMAN_TABLES
-		printf("length %u bits: %u codes\n", i+1, L[i]);
-#endif
-	}
-	
-	printf("total %u codes\n", mt);
 
-	uint16_t codeword=0;
+  uint16_t pos_end = pic->pos_in_file + len - 2;
+
+  while (pic->pos_in_file < pos_end) {
+    uint8_t TcTh=get1i(pic->data, &(pic->pos_in_file));
+    uint8_t Tc=(TcTh>>4)&0x0f;
+    uint8_t Th=TcTh&0x0f;
 	
-	for(i=0; i<16; i++)
-	{
-		uint8_t j;
-		for(j=0; j<L[i]; j++)
-		{
-			uint8_t V=get1i(pic->data, &(pic->pos_in_file));
+    printf("Tc %u (%s table)\n", Tc, (Tc==0)?"DC":"AC");
+    printf("Th (table destination identifier) %u\n", Th);
+	
+    uint8_t L[16];
+    uint8_t mt=0;
+    uint8_t i;
+    for(i=0; i<16; i++)
+    {
+      L[i]=get1i(pic->data, &(pic->pos_in_file));
+      mt+=L[i];
 #ifdef PRINT_DETAILS_HUFFMAN_TABLES
-			printf("codeword %s (0x%x) (sz %u) -> %u (0x%x)\n", to_bin(codeword, i+1), codeword, i+1, V, V);
+      printf("length %u bits: %u codes\n", i+1, L[i]);
 #endif
-			pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].sz=i+1;
-			pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].codeword=codeword;
-			pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].decoded=V;
-			pic->huff_tables[Tc][Th].nb_entries++;
+    }
+	
+    printf("total %u codes\n", mt);
+
+    uint16_t codeword=0;
+	
+    for(i=0; i<16; i++)
+    {
+      uint8_t j;
+      for(j=0; j<L[i]; j++)
+      {
+        uint8_t V=get1i(pic->data, &(pic->pos_in_file));
+#ifdef PRINT_DETAILS_HUFFMAN_TABLES
+        printf("codeword %s (0x%x) (sz %u) -> %u (0x%x)\n", to_bin(codeword, i+1), codeword, i+1, V, V);
+#endif
+        pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].sz=i+1;
+        pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].codeword=codeword;
+        pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].decoded=V;
+        pic->huff_tables[Tc][Th].nb_entries++;
 			
-			codeword++;
-		}
-		codeword<<=1;
-	}
+        codeword++;
+      }
+      codeword<<=1;
+    }
+  }
 }
 
 void parse_SOS(picture_t * const pic)
@@ -372,36 +377,40 @@ void parse_DQT(picture_t * const pic)
 {
 	uint16_t Lq=get2i(pic->data, &(pic->pos_in_file));
 	printf("DQT found (length %u bytes)\n", Lq);
-	
-	uint8_t PqTq=get1i(pic->data, &(pic->pos_in_file));
-	uint8_t Pq=(PqTq>>4)&0x0f;
-	uint8_t Tq=PqTq&0x0f;
-	printf("Pq (element precision) %u -> %u bits\n", Pq, (Pq==0)?8:16);
-	printf("Tq (table destination identifier) %u\n", Tq);
-	
-	if(Pq!=0)
-		errx(1, "DQT: only 8 bit precision supported");
-	
-	uint16_t nb_data_bytes=Lq-2-1;
-	
-	if(nb_data_bytes!=64)
-		errx(1, "DQT: nb_data_bytes!=64");
 
-	uint8_t u,v;
-	for(u=0; u<8; u++)
-	{
-		for(v=0; v<8; v++)
-		{
-			uint8_t Q=get1i(pic->data, &(pic->pos_in_file));
+  uint16_t pos_end = pic->pos_in_file + Lq - 2;
+
+  while (pic->pos_in_file < pos_end) {
+    uint8_t PqTq=get1i(pic->data, &(pic->pos_in_file));
+    uint8_t Pq=(PqTq>>4)&0x0f;
+    uint8_t Tq=PqTq&0x0f;
+    printf("Pq (element precision) %u -> %u bits\n", Pq, (Pq==0)?8:16);
+    printf("Tq (table destination identifier) %u\n", Tq);
+	
+    if(Pq!=0)
+      errx(1, "DQT: only 8 bit precision supported");
+	
+    uint16_t nb_data_bytes=Lq-2-1;
+	
+    if(nb_data_bytes!=64)
+      errx(1, "DQT: nb_data_bytes!=64");
+
+    uint8_t u,v;
+    for(u=0; u<8; u++)
+    {
+      for(v=0; v<8; v++)
+      {
+        uint8_t Q=get1i(pic->data, &(pic->pos_in_file));
 #ifdef PRINT_DETAILS_QUANTTABLES
-			printf("%02u ", Q);
+        printf("%02u ", Q);
 #endif
-			pic->quant_tables[Tq][u][v]=Q;
-		}
+        pic->quant_tables[Tq][u][v]=Q;
+      }
 #ifdef PRINT_DETAILS_QUANTTABLES
-		printf("\n");
+      printf("\n");
 #endif
-	}
+    }
+  }
 	printf("\n");
 }
 
@@ -557,7 +566,7 @@ void parse_bitmap_data(picture_t * const pic, PGCtx *pg)
     pg->pos[gg] = 0;
 
     // only 2 quant tables on input, but 3 that we use
-    int tq = gg > 0 ? 1 : 0;
+    int tq = pic->components_data[gg].Tq;
 
     PG_COPY_QTABL (pg, gg, pic->quant_tables[tq]);
   }
@@ -584,6 +593,14 @@ void parse_bitmap_data(picture_t * const pic, PGCtx *pg)
 	printf("parsed %lu MCU\n", nb_MCU);
 }
 
+void skip_COM (picture_t * const pic)
+{
+  uint16_t Lq=get2i(pic->data, &(pic->pos_in_file));
+	printf("COM found (length %u bytes)\n", Lq);
+
+  pic->pos_in_file+=Lq-2;
+}
+
 void parse_picture(picture_t * const picture, PGCtx *pg)
 {
 	while(picture->pos_in_file<=picture->filesize-2)
@@ -595,7 +612,8 @@ void parse_picture(picture_t * const picture, PGCtx *pg)
 		switch(marker)
 		{
 			case 0xFFD8:	printf("SOI found\n"); break;
-			
+
+      case 0xFFFE:  skip_COM (picture); break;
 			case 0xFFE1:	skip_EXIF(picture); break;
 			
 			case 0xFFE0:	parse_APP0(picture); break;
@@ -609,19 +627,24 @@ void parse_picture(picture_t * const picture, PGCtx *pg)
 			
 			case 0xFFD9:	printf("EOI found\n"); break;
 			
-			default: errx(1, "unknown marker 0x%04x pos %lu", marker, picture->pos_in_file); break;
+			default:
+        
+        errx(1, "unknown marker 0x%04x pos %lu", marker, picture->pos_in_file); break;
 		}
 		printf("\n");
 	}
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
   PGCtx pg;
 	picture_t pic;
+  char *filename = "kitten_small.jpg";
+  
+  if (argc > 1)
+    filename = argv[1];
 	
-	open_new_picture("kitten_small.jpg", &pic);
-	
+	open_new_picture(filename, &pic);
 	parse_picture(&pic, &pg);
 
 #if 0
@@ -630,7 +653,7 @@ int main(void)
 	close_picture(&pic);
 #endif
 
-  kitten_gl_show (&pg);
+  kitten_gl_show (&pg, filename);
 
   printf("exit nicely\n");
 	return 0;

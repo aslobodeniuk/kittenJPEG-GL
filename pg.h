@@ -14,10 +14,10 @@ static void
 pg_set_component_dimensions (PGCtx *pg, int component)
 {
   int dH = component == 0 ? 1 : 2; // FIXME: Hmax, Vmax, H, V
-  int space = pg->proper.w * pg->proper.h;
+  int space = ((pg->proper.w + dH - 1)/ dH) * ((pg->proper.h + dH - 1) / dH);
   
   pg->aligned[component].w = ceil_to_multiple_of ((pg->proper.w + dH - 1) / dH, 64);
-  pg->aligned[component].h = ceil_to_multiple_of (((space + pg->aligned[component].w - 1) / pg->aligned[component].w), 2) / dH;
+  pg->aligned[component].h = ceil_to_multiple_of (((space + pg->aligned[component].w - 1) / pg->aligned[component].w), 2);
 }
 
 static void PG_2MATREX (matrix8x8_t matrix, PGCtx *pg, int component) {

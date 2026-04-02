@@ -475,11 +475,15 @@ pg_jpegdec_open (PGCtx *pg) // Not really an open, also uploads for now
   
 }
 
-void kitten_gl_show (PGCtx *pg) {
+#define KITTEN_WINDOW_TITLE "JPEG decoder shader : "
+
+void kitten_gl_show (PGCtx *pg, const char* filename) {
   PGX11Window pgw;
+  char title[256] = KITTEN_WINDOW_TITLE;
+  strncat (title, filename, sizeof(title) - sizeof (KITTEN_WINDOW_TITLE) - 1);
   
   // Split to things?
-  pg_window_open_x11 (&pgw, 1024, 1024, "JPEG decoder shader");
+  pg_window_open_x11 (&pgw, 1024, 1024, title);
   pg_window_bind_context_egl (&pgw);
   
   pg_init_jpegdec ();
