@@ -132,7 +132,8 @@ static int pg_window_bind_context_egl (PGX11Window *pgw)
   // ---- Choose an EGLConfig suitable for an X11 window surface + GLES3
   const EGLint config_attribs[] = {
     EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+    EGL_RENDERABLE_TYPE,
+    EGL_OPENGL_ES3_BIT,
     EGL_RED_SIZE, 8,
     EGL_GREEN_SIZE, 8,
     EGL_BLUE_SIZE, 8,

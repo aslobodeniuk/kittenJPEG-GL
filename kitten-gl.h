@@ -456,6 +456,17 @@ pg_draw_step_draw (PGDrawStep * ds, GLuint vao) {
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+static int
+pg_init_jpegdec ()
+{
+  printf ("GL: %s\n", glGetString(GL_VERSION));
+
+  // TODO: don't require window,
+  // get headless context from the display.
+  // But then we mast be able to attach to windows context too...
+  pg_compile_all_shaders ();  
+}
+
 void kitten_gl_show (PGCtx *pg) {
   PGX11Window pgw;
   
@@ -463,10 +474,7 @@ void kitten_gl_show (PGCtx *pg) {
   pg_window_open_x11 (&pgw, 1024, 1024, "JPEG decoder shader");
   pg_window_bind_context_egl (&pgw);
   
-  printf ("GL: %s\n", glGetString(GL_VERSION));
-  // TODO: don't require window,
-  // get context from the display
-  pg_compile_all_shaders ();
+  pg_init_jpegdec ();
 
   /* On the input we have a stream of blox: [64pix][64pix][64pix]...
    * No wonder we crave like (w,h) aligned to 64, such as 512. */
