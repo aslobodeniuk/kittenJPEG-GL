@@ -13,7 +13,7 @@
 
 #include "pg-window.h"
 
-const char* vertexPassThrough = "#version 300 es\n"
+static const char vertexPassThrough[] = "#version 300 es\n"
 "layout (location = 0) in vec2 pos;\n"
 "layout (location = 1) in vec2 tex;\n"
 "out vec2 texCoord;\n"
@@ -22,7 +22,7 @@ const char* vertexPassThrough = "#version 300 es\n"
 "    texCoord = tex;\n"
 "}";
 
-static const char * fragmentPassThrough =
+static const char fragmentPassThrough[] =
     "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
@@ -33,7 +33,7 @@ static const char * fragmentPassThrough =
     "  fragColor = texture(rgbTex, texCoord);\n"
     "}\n";
 
-static const char * zigzagToDCT =
+static const char zigzagToDCT[] =
     "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
@@ -71,7 +71,7 @@ static const char * zigzagToDCT =
     "  fragColor = vec4(pixel, 0.0, 0.0, 1.0);\n"    
     "}\n";
 
-const char* DCTtoP = "#version 300 es\n"
+static const char DCTtoP[] = "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
     "out vec4 fragColor;\n"
@@ -112,7 +112,7 @@ const char* DCTtoP = "#version 300 es\n"
     "    fragColor = vec4(pix, 0.0, 0.0, 1.0);\n"
     "}\n";
 
-const char* YUVtoRGB = 
+static const char YUVtoRGB[] = 
 "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
@@ -130,8 +130,6 @@ const char* YUVtoRGB =
     "      return clamp (vec4 (r, g, b, 255.0) / 255.0, 0.0, 1.0);\n"  
     "    }\n"
 
-    /* There's 4 blocks of Y per 1 Cr and 1 Cb.
-     * So the Y image is */
     "    ivec2 remap_coords (int x, int y, int in_width, int out_width)\n"
     "    {\n"
     "        int out_bpl = out_width / 8;\n"
@@ -233,18 +231,19 @@ void rf_shader_error (GLuint shader)
   exit (1);
 }
 
-GLuint rf_compile_shader(GLenum type, const char* src) {
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &src, NULL);
-    glCompileShader(shader);
+GLuint pg_compile_shader(GLenum type, const char* src)
+{
+  GLuint shader = glCreateShader(type);
+  glShaderSource(shader, 1, &src, NULL);
+  glCompileShader(shader);
 
-    GLint compiled = 0;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
-    if (!compiled) {
-      rf_shader_error (shader);
-    }
+  GLint compiled = 0;
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+  if (!compiled) {
+    rf_shader_error (shader);
+  }
     
-    return shader;
+  return shader;
 }
 
 GLuint rf_gen_target_buffer ()
@@ -278,13 +277,40 @@ GLuint rf_gen_target_buffer ()
   return vao;
 }
 
-GLuint rf_create_shader_program (const char *vertex, const char *fragment, RFUniform *unis)
+typedef enum {
+  PG_SHADER_VERTEX_PASSTHROUGH,
+  PG_SHADER_FRAGMENT_PASSTHROUGH,
+  PG_SHADER_ZZ_TO_DCT,
+  PG_SHADER_DCT_TO_P,
+  PG_SHADER_YUV_TO_RGB
+} PGShader;
+
+static struct { // Attach output format to shader == smart
+  GLuint sh;
+  GLenum type;
+  const char *code;
+} PGShaderBase[] = {
+  [PG_SHADER_VERTEX_PASSTHROUGH] = { .type = GL_VERTEX_SHADER, .code = vertexPassThrough },
+  [PG_SHADER_FRAGMENT_PASSTHROUGH] = { .type = GL_FRAGMENT_SHADER, .code =  fragmentPassThrough },
+  [PG_SHADER_ZZ_TO_DCT] = { .type = GL_FRAGMENT_SHADER, .code = zigzagToDCT },
+  [PG_SHADER_DCT_TO_P] = { .type = GL_FRAGMENT_SHADER, .code = DCTtoP },
+  [PG_SHADER_YUV_TO_RGB] = { .type = GL_FRAGMENT_SHADER, .code = YUVtoRGB }
+};
+
+#define PG_N_ELEMENTS(x) (sizeof(x) / sizeof(x[0]))
+
+int pg_compile_all_shaders (void)
 {
-  GLuint vs = rf_compile_shader(GL_VERTEX_SHADER, vertex);
-  GLuint fs = rf_compile_shader(GL_FRAGMENT_SHADER, fragment);
+  for (int i = 0; i < PG_N_ELEMENTS (PGShaderBase); i++) {
+    PGShaderBase[i].sh = pg_compile_shader (PGShaderBase[i].type, PGShaderBase[i].code);
+  }
+}
+
+GLuint pg_create_shader_program (PGShader fragment, RFUniform *unis)
+{
   GLuint shader = glCreateProgram();
-  glAttachShader(shader, vs);
-  glAttachShader(shader, fs);
+  glAttachShader(shader, PGShaderBase[PG_SHADER_VERTEX_PASSTHROUGH].sh); // vertex shader always pthrough
+  glAttachShader(shader, PGShaderBase[fragment].sh);
   glLinkProgram(shader);
 
   GLint linkStatus;
@@ -398,21 +424,18 @@ typedef struct {
   struct {
     int w, h;
     GLenum output_format;
-    const char*shader_code;
+    PGShader shader;
     RFUniform unis[16];
     int is_window;
   } init;
 
   RFFb framebuffer;
-  GLuint shader_prog;    
+  GLuint shader_prog;   
 } PGDrawStep;
 
 static int
 pg_draw_step_compile (PGDrawStep * ds) {
-  /* COULDS: - reuse vertex compiled shader, reuse program if there's a same shader
-   * across multiple draw steps */
-  ds->shader_prog = rf_create_shader_program (vertexPassThrough,
-      ds->init.shader_code, ds->init.unis);
+  ds->shader_prog = pg_create_shader_program (ds->init.shader, ds->init.unis);
 
   if (ds->init.is_window == 0) {
     ds->framebuffer = rf_make_framebuffer (ds->init.output_format,
@@ -434,11 +457,15 @@ pg_draw_step_draw (PGDrawStep * ds, GLuint vao) {
 
 void kitten_gl_show (PGCtx *pg) {
   PGX11Window pgw;
+  
   // Split to things?
   pg_window_open_x11 (&pgw, 1024, 1024, "JPEG decoder shader");
   pg_window_bind_context_egl (&pgw);
   
   printf ("GL: %s\n", glGetString(GL_VERSION));
+  // TODO: don't require window,
+  // get context from the display
+  pg_compile_all_shaders ();
 
   /* On the input we have a stream of blox: [64pix][64pix][64pix]...
    * No wonder we crave like (w,h) aligned to 64, such as 512. */
@@ -451,7 +478,7 @@ void kitten_gl_show (PGCtx *pg) {
       .w = pg->aligned[0].w,
       .h = pg->aligned[0].h,
       .output_format = GL_R16F,
-      .shader_code = zigzagToDCT,
+      .shader = PG_SHADER_ZZ_TO_DCT,
       .unis = {
         { "zigzagInpP", zigzagInpY, PG_TEXTURE },
         { "qTable", (uint64_t)&pg->qtable[0][0], 64 },
@@ -464,7 +491,7 @@ void kitten_gl_show (PGCtx *pg) {
       .w = pg->aligned[1].w,
       .h = pg->aligned[1].h,
       .output_format = GL_R16F,
-      .shader_code = zigzagToDCT,
+      .shader = PG_SHADER_ZZ_TO_DCT,
       .unis = {
         { "zigzagInpP", zigzagInpU, PG_TEXTURE },
         { "qTable", (uint64_t)&pg->qtable[1][0], 64 },
@@ -477,7 +504,7 @@ void kitten_gl_show (PGCtx *pg) {
       .w = pg->aligned[2].w,
       .h = pg->aligned[2].h,
       .output_format = GL_R16F,
-      .shader_code = zigzagToDCT,
+      .shader = PG_SHADER_ZZ_TO_DCT,
       .unis = {
         { "zigzagInpP", zigzagInpV, PG_TEXTURE },
         { "qTable", (uint64_t)&pg->qtable[2][0], 64 },
@@ -485,22 +512,18 @@ void kitten_gl_show (PGCtx *pg) {
       }
     }};
 
-  /* We create 3 shaders of the same source, but the benefit is that we don't
-   * have to reset the uniform.
-   * The redundancy is that we could create 3 programs of 1 shader.
-   * Also always reuse the vertex one. */
+  /* The redundancy is that we could create 3 programs of 1 shader.
+   * TODO: reuse programs of the same shader (take is_window into account) */
   pg_draw_step_compile (&zigzag_to_dct_y);
   pg_draw_step_compile (&zigzag_to_dct_u);
   pg_draw_step_compile (&zigzag_to_dct_v);
-  /* On the output of this step we still have [64pix][64pigs][64pix].
-   * This one already have been validated BTW */
 
   PGDrawStep dct_to_y = {
     .init = {
       .w = pg->aligned[0].w,
       .h = pg->aligned[0].h,
       .output_format = GL_R16F,
-      .shader_code = DCTtoP,
+      .shader = PG_SHADER_DCT_TO_P,
       .unis = {
         { "dctInpP", zigzag_to_dct_y.framebuffer.texture, PG_TEXTURE },
         { NULL }
@@ -512,7 +535,7 @@ void kitten_gl_show (PGCtx *pg) {
       .w = pg->aligned[1].w,
       .h = pg->aligned[1].h,
       .output_format = GL_R16F,
-      .shader_code = DCTtoP,
+      .shader = PG_SHADER_DCT_TO_P,
       .unis = {
         { "dctInpP", zigzag_to_dct_u.framebuffer.texture, PG_TEXTURE },
         { NULL }
@@ -524,7 +547,7 @@ void kitten_gl_show (PGCtx *pg) {
       .w = pg->aligned[2].w,
       .h = pg->aligned[2].h,
       .output_format = GL_R16F,
-      .shader_code = DCTtoP,
+      .shader = PG_SHADER_DCT_TO_P,
       .unis = {
         { "dctInpP", zigzag_to_dct_v.framebuffer.texture, PG_TEXTURE },
         { NULL }
@@ -540,7 +563,7 @@ void kitten_gl_show (PGCtx *pg) {
       .w = pg->proper.w,
       .h = pg->proper.h,
       .output_format = GL_RGB,
-      .shader_code = YUVtoRGB,
+      .shader = PG_SHADER_YUV_TO_RGB,
       .unis = {
         { "yuvInpY", dct_to_y.framebuffer.texture, PG_TEXTURE },
         { "yuvInpU", dct_to_u.framebuffer.texture, PG_TEXTURE },
@@ -558,7 +581,7 @@ void kitten_gl_show (PGCtx *pg) {
       .is_window = 1,
       .w = 1024, // connect to window creation??
       .h = 1024,
-      .shader_code = fragmentPassThrough,
+      .shader = PG_SHADER_FRAGMENT_PASSTHROUGH,
       .unis = {
         { "rgbTex", yuv_to_rgb.framebuffer.texture, PG_TEXTURE },
         { NULL }
