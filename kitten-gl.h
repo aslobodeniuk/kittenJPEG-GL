@@ -13,16 +13,35 @@
 
 #include "pg-window.h"
 
-static const char vertexPassThrough[] = "#version 300 es\n"
-"layout (location = 0) in vec2 pos;\n"
-"layout (location = 1) in vec2 tex;\n"
-"out vec2 texCoord;\n"
-"void main() {\n"
-"    gl_Position = vec4(pos, 0.0, 1.0);\n"
-"    texCoord = tex;\n"
-"}";
+typedef enum {
+  PG_SHADER_VERTEX_PASSTHROUGH,
+  PG_SHADER_FRAGMENT_PASSTHROUGH,
+  PG_SHADER_ZZ_TO_DCT,
+  PG_SHADER_DCT_TO_P,
+  PG_SHADER_YUV_TO_RGB
+} PGShader;
 
-static const char fragmentPassThrough[] =
+static struct {
+  GLuint sh;
+  GLenum type;
+  const char *code;
+  GLenum output_format;
+} PGShaderBase[] = {
+  [PG_SHADER_VERTEX_PASSTHROUGH] = {
+    .type = GL_VERTEX_SHADER,
+    .code =
+    "#version 300 es\n"
+    "layout (location = 0) in vec2 pos;\n"
+    "layout (location = 1) in vec2 tex;\n"
+    "out vec2 texCoord;\n"
+    "void main() {\n"
+    "    gl_Position = vec4(pos, 0.0, 1.0);\n"
+    "    texCoord = tex;\n"
+    "}"
+  },
+  [PG_SHADER_FRAGMENT_PASSTHROUGH] = {
+    .type = GL_FRAGMENT_SHADER,
+    .code =
     "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
@@ -31,9 +50,12 @@ static const char fragmentPassThrough[] =
     "uniform sampler2D rgbTex;\n"
     "void main() {\n"
     "  fragColor = texture(rgbTex, texCoord);\n"
-    "}\n";
-
-static const char zigzagToDCT[] =
+    "}\n"
+  },
+  [PG_SHADER_ZZ_TO_DCT] = {
+    .type = GL_FRAGMENT_SHADER,
+    .output_format = GL_R16F,
+    .code =
     "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
@@ -69,9 +91,12 @@ static const char zigzagToDCT[] =
     "  float pixel = texelFetch(zigzagInpP, pos, 0).r;\n"
     "  pixel *= dequant;\n"
     "  fragColor = vec4(pixel, 0.0, 0.0, 1.0);\n"    
-    "}\n";
-
-static const char DCTtoP[] = "#version 300 es\n"
+    "}\n"
+  },
+  [PG_SHADER_DCT_TO_P] = {
+    .type = GL_FRAGMENT_SHADER,
+    .output_format = GL_R16F,
+    .code = "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
     "out vec4 fragColor;\n"
@@ -110,10 +135,12 @@ static const char DCTtoP[] = "#version 300 es\n"
     // do idct
     "    float pix = idct (input_block_x, input_y, x, y);\n"
     "    fragColor = vec4(pix, 0.0, 0.0, 1.0);\n"
-    "}\n";
-
-static const char YUVtoRGB[] = 
-"#version 300 es\n"
+    "}\n"
+  },
+  [PG_SHADER_YUV_TO_RGB] = {
+    .type = GL_FRAGMENT_SHADER,
+    .output_format = GL_RGB,
+    .code = "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
     "out vec4 fragColor;\n"
@@ -178,19 +205,12 @@ static const char YUVtoRGB[] =
     "    ivec2 inPixelCb = remap_coords (outPixel.x / 2, (outHeight - outPixel.y - 1) / 2, width / 2, outWidth / 2);\n"
     "    float yy = texelFetch(yuvInpY, inPixelY, 0).r;\n"
     // fixme: add uniforms for uH uV and vH vV
-   "    float u = texelFetch(yuvInpU, ivec2(inPixelCb.x, inPixelCb.y), 0).r;\n"
-   "    float v = texelFetch(yuvInpV, ivec2(inPixelCr.x, inPixelCr.y), 0).r;\n"
+    "    float u = texelFetch(yuvInpU, ivec2(inPixelCb.x, inPixelCb.y), 0).r;\n"
+    "    float v = texelFetch(yuvInpV, ivec2(inPixelCr.x, inPixelCr.y), 0).r;\n"
     "    fragColor = yuv_to_rgb (yy, u - 128.0, v - 128.0);\n"
-    "}\n";
-
-typedef struct
-{
-  void *Y;
-  void *U;
-  void *V;
-  int width;
-  int height;
-} RFYUVData;
+    "}\n",
+  }
+};
 
 enum {
   PG_INT = -1,
@@ -277,28 +297,10 @@ GLuint rf_gen_target_buffer ()
   return vao;
 }
 
-typedef enum {
-  PG_SHADER_VERTEX_PASSTHROUGH,
-  PG_SHADER_FRAGMENT_PASSTHROUGH,
-  PG_SHADER_ZZ_TO_DCT,
-  PG_SHADER_DCT_TO_P,
-  PG_SHADER_YUV_TO_RGB
-} PGShader;
-
-static struct { // Attach output format to shader == smart
-  GLuint sh;
-  GLenum type;
-  const char *code;
-} PGShaderBase[] = {
-  [PG_SHADER_VERTEX_PASSTHROUGH] = { .type = GL_VERTEX_SHADER, .code = vertexPassThrough },
-  [PG_SHADER_FRAGMENT_PASSTHROUGH] = { .type = GL_FRAGMENT_SHADER, .code =  fragmentPassThrough },
-  [PG_SHADER_ZZ_TO_DCT] = { .type = GL_FRAGMENT_SHADER, .code = zigzagToDCT },
-  [PG_SHADER_DCT_TO_P] = { .type = GL_FRAGMENT_SHADER, .code = DCTtoP },
-  [PG_SHADER_YUV_TO_RGB] = { .type = GL_FRAGMENT_SHADER, .code = YUVtoRGB }
-};
 
 #define PG_N_ELEMENTS(x) (sizeof(x) / sizeof(x[0]))
 
+// FIXME: handle compilation error ok
 int pg_compile_all_shaders (void)
 {
   for (int i = 0; i < PG_N_ELEMENTS (PGShaderBase); i++) {
@@ -423,7 +425,6 @@ GLuint rf_create_texture(const float* data, int width, int height) {
 typedef struct {
   struct {
     int w, h;
-    GLenum output_format;
     PGShader shader;
     RFUniform unis[16];
     int is_window;
@@ -438,7 +439,7 @@ pg_draw_step_compile (PGDrawStep * ds) {
   ds->shader_prog = pg_create_shader_program (ds->init.shader, ds->init.unis);
 
   if (ds->init.is_window == 0) {
-    ds->framebuffer = rf_make_framebuffer (ds->init.output_format,
+    ds->framebuffer = rf_make_framebuffer (PGShaderBase[ds->init.shader].output_format,
         ds->init.w, ds->init.h);
   }
 
@@ -477,7 +478,6 @@ void kitten_gl_show (PGCtx *pg) {
     .init = {
       .w = pg->aligned[0].w,
       .h = pg->aligned[0].h,
-      .output_format = GL_R16F,
       .shader = PG_SHADER_ZZ_TO_DCT,
       .unis = {
         { "zigzagInpP", zigzagInpY, PG_TEXTURE },
@@ -490,7 +490,6 @@ void kitten_gl_show (PGCtx *pg) {
     .init = {
       .w = pg->aligned[1].w,
       .h = pg->aligned[1].h,
-      .output_format = GL_R16F,
       .shader = PG_SHADER_ZZ_TO_DCT,
       .unis = {
         { "zigzagInpP", zigzagInpU, PG_TEXTURE },
@@ -503,7 +502,6 @@ void kitten_gl_show (PGCtx *pg) {
     .init = {
       .w = pg->aligned[2].w,
       .h = pg->aligned[2].h,
-      .output_format = GL_R16F,
       .shader = PG_SHADER_ZZ_TO_DCT,
       .unis = {
         { "zigzagInpP", zigzagInpV, PG_TEXTURE },
@@ -522,7 +520,6 @@ void kitten_gl_show (PGCtx *pg) {
     .init = {
       .w = pg->aligned[0].w,
       .h = pg->aligned[0].h,
-      .output_format = GL_R16F,
       .shader = PG_SHADER_DCT_TO_P,
       .unis = {
         { "dctInpP", zigzag_to_dct_y.framebuffer.texture, PG_TEXTURE },
@@ -534,7 +531,6 @@ void kitten_gl_show (PGCtx *pg) {
     .init = {
       .w = pg->aligned[1].w,
       .h = pg->aligned[1].h,
-      .output_format = GL_R16F,
       .shader = PG_SHADER_DCT_TO_P,
       .unis = {
         { "dctInpP", zigzag_to_dct_u.framebuffer.texture, PG_TEXTURE },
@@ -546,7 +542,6 @@ void kitten_gl_show (PGCtx *pg) {
     .init = {
       .w = pg->aligned[2].w,
       .h = pg->aligned[2].h,
-      .output_format = GL_R16F,
       .shader = PG_SHADER_DCT_TO_P,
       .unis = {
         { "dctInpP", zigzag_to_dct_v.framebuffer.texture, PG_TEXTURE },
@@ -562,7 +557,6 @@ void kitten_gl_show (PGCtx *pg) {
     .init = {
       .w = pg->proper.w,
       .h = pg->proper.h,
-      .output_format = GL_RGB,
       .shader = PG_SHADER_YUV_TO_RGB,
       .unis = {
         { "yuvInpY", dct_to_y.framebuffer.texture, PG_TEXTURE },
