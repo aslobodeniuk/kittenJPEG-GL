@@ -223,31 +223,34 @@ typedef struct {
   int amount; // -1 == int, 0 == texture, > 0 == array
 } RFUniform;
 
-void rf_shader_error (GLuint shader)
+void pg_program_link_error (GLuint prog)
 {
-    // Get the length of the info log
-#if 1
-    GLint logLength;
-    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &logLength);
-
-    // Allocate space for the log and retrieve it
-    char *log = (char *)malloc(logLength);
-    glGetShaderInfoLog(shader, logLength, NULL, log);
-
-    // Print the log
-    printf("Shader compile error:\n%s\n", log);
-
-    free(log);
-#else
-  
   GLint logLength;
-  glGetProgramiv(shader, GL_INFO_LOG_LENGTH, &logLength);
+  glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &logLength);
   char *log = (char *)malloc(logLength);
-  glGetProgramInfoLog(shader, logLength, NULL, log);
+  glGetProgramInfoLog(prog, logLength, NULL, log);
   printf("Program failed:\n%s\n", log);
   free(log);
-#endif
 
+  // FIXME
+  exit (1);
+}
+
+void rf_shader_error (GLuint shader)
+{
+  GLint logLength;
+  glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &logLength);
+
+  // Allocate space for the log and retrieve it
+  char *log = (char *)malloc(logLength);
+  glGetShaderInfoLog(shader, logLength, NULL, log);
+
+  // Print the log
+  printf("Shader compile error:\n%s\n", log);
+
+  free(log);
+
+  // FIXME
   exit (1);
 }
 
@@ -318,7 +321,7 @@ GLuint pg_create_shader_program (PGShader fragment, RFUniform *unis)
   GLint linkStatus;
   glGetProgramiv(shader, GL_LINK_STATUS, &linkStatus);
   if (!linkStatus) {
-    rf_shader_error (shader);
+    pg_program_link_error (shader);
   }
 
   glUseProgram(shader);
@@ -387,7 +390,6 @@ RFFb rf_make_framebuffer (GLenum format, int width, int height)
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glFramebufferTexture2D(GL_FRAMEBUFFER,
       GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ret.texture, 0);
-//  glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, ret.texture, 0);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glBindTexture(GL_TEXTURE_2D, 0);
   
@@ -467,6 +469,12 @@ pg_init_jpegdec ()
   pg_compile_all_shaders ();  
 }
 
+static int
+pg_jpegdec_open (PGCtx *pg) // Not really an open, also uploads for now
+{
+  
+}
+
 void kitten_gl_show (PGCtx *pg) {
   PGX11Window pgw;
   
@@ -476,8 +484,6 @@ void kitten_gl_show (PGCtx *pg) {
   
   pg_init_jpegdec ();
 
-  /* On the input we have a stream of blox: [64pix][64pix][64pix]...
-   * No wonder we crave like (w,h) aligned to 64, such as 512. */
   GLuint zigzagInpY = rf_create_texture(pg->data[0], pg->aligned[0].w, pg->aligned[0].h);
   GLuint zigzagInpU = rf_create_texture(pg->data[1], pg->aligned[1].w, pg->aligned[1].h);
   GLuint zigzagInpV = rf_create_texture(pg->data[2], pg->aligned[2].w, pg->aligned[2].h);
