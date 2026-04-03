@@ -14,9 +14,9 @@ static void
 pg_set_component_dimensions (PGCtx *pg, int component, int w, int h)
 {
   int dH = component == 0 ? 1 : 2; // FIXME: Hmax, Vmax, H, V
-  int space = ((w + dH - 1)/ dH) * ((h + dH - 1) / dH);
+  int space = (w/ dH) * (h/ dH);
   
-  pg->aligned[component].w = ceil_to_multiple_of ((w + dH - 1) / dH, 64);
+  pg->aligned[component].w = ceil_to_multiple_of (w / dH, 64);
   pg->aligned[component].h = ceil_to_multiple_of (((space + pg->aligned[component].w - 1) / pg->aligned[component].w), 2);
 }
 

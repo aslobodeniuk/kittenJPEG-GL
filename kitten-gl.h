@@ -147,8 +147,12 @@ static struct {
     "uniform sampler2D yuvInpY;\n"
     "uniform sampler2D yuvInpU;\n"
     "uniform sampler2D yuvInpV;\n"
-    "uniform int       outWidth;\n"
     "uniform int       outHeight;\n"
+    "uniform int       inBloxPerRowY;\n"
+    "uniform int       inBloxPerRowUV;\n"
+    "uniform int       outMCUPerRowY;\n"
+    "uniform int       outMCUPerRowUV;\n"
+
     "    vec4 yuv_to_rgb (float y, float u, float v)\n"
     "    {\n"
     "      float r = y + 1.402 * v;\n"
@@ -158,13 +162,12 @@ static struct {
     "    }\n"
 
 
-    "ivec2 remap_coords_uv420(int x, int y, int blocks_per_row_uv, int chroma_width)\n"
+    "ivec2 remap_coords_uv420(int x, int y, int blocks_per_row_uv, int mcu_per_row_uv)\n"
     "{\n"
     "    int cx = x >> 1;\n"
     "    int cy = y >> 1;\n"
     "\n"
-    "    int out_bpl = (chroma_width + 7) >> 3;        // chroma_width / 8\n"
-    "    int block_id = (cy >> 3) * out_bpl + (cx >> 3);\n"
+    "    int block_id = (cy >> 3) * mcu_per_row_uv + (cx >> 3);\n"
     "\n"
     "    int in_by = block_id / blocks_per_row_uv;\n"
     "    int in_bx = (block_id % blocks_per_row_uv) * 64;\n"
@@ -173,9 +176,8 @@ static struct {
     "    return ivec2(in_bx + in_inbx, in_by);\n"
     "}\n"
 
-    "    ivec2 remap_coordsY (int x, int y, int in_width, int out_width)\n"
+    "    ivec2 remap_coordsY (int x, int y, int in_blox_per_row, int mcu_per_row)\n"
     "    {\n"
-    "        int mcu_per_row = (out_width + 15)/ 16;\n"
     "        int mcu_x = x / 16;\n"
     "        int mcu_y = y / 16;\n"
     "        int mcu_id = mcu_y * mcu_per_row + mcu_x;\n"
@@ -183,9 +185,8 @@ static struct {
     "        int sub_y = (y / 8) & 1;\n"
     "        int y_sub_id = sub_y * 2 + sub_x;\n"
     "        int block_id = mcu_id * 4 + y_sub_id;\n"
-    "        int in_mcu_per_row = (in_width + 63)/ 64;\n"
-    "        int in_by = block_id / in_mcu_per_row;\n"
-    "        int in_bx = (block_id % in_mcu_per_row) * 64;\n"
+    "        int in_by = block_id / in_blox_per_row;\n"
+    "        int in_bx = (block_id % in_blox_per_row) * 64;\n"
     "        int in_y = in_by;\n"
 
     "        int in_inbx =  (y % 8) + 8 * ((x % 8));\n"
@@ -198,8 +199,10 @@ static struct {
     "    int height = textureSize (yuvInpY, 0).y;\n"
     
     "    ivec2 outPixel = ivec2(gl_FragCoord.xy);\n"
-    "    ivec2 inPixelY = remap_coordsY (outPixel.x, (outHeight - outPixel.y - 1), width, outWidth);\n"
-    "    ivec2 inPixelCrCb = remap_coords_uv420(outPixel.x, outHeight - outPixel.y - 1, (width + 127) / 128, outWidth / 2);"
+    "    ivec2 inPixelY = remap_coordsY (outPixel.x, (outHeight - outPixel.y - 1), "
+    "                                    inBloxPerRowY, outMCUPerRowY);\n"
+    "    ivec2 inPixelCrCb = remap_coords_uv420(outPixel.x, outHeight - outPixel.y - 1,"
+    "                                           inBloxPerRowUV, outMCUPerRowUV);"
     "    float yy = texelFetch(yuvInpY, inPixelY, 0).r;\n"
     "    float u = texelFetch(yuvInpU, ivec2(inPixelCrCb.x, inPixelCrCb.y), 0).r;\n"
     "    float v = texelFetch(yuvInpV, ivec2(inPixelCrCb.x, inPixelCrCb.y), 0).r;\n"
@@ -584,8 +587,12 @@ void kitten_gl_show (PGCtx *pg, const char* filename) {
         { "yuvInpY", dct_to_y.framebuffer.texture, PG_TEXTURE },
         { "yuvInpU", dct_to_u.framebuffer.texture, PG_TEXTURE },
         { "yuvInpV", dct_to_v.framebuffer.texture, PG_TEXTURE },
-        { "outWidth", pg->proper.w, PG_INT },
+//        { "outWidth", pg->proper.w, PG_INT },
         { "outHeight", pg->proper.h, PG_INT },
+        { "inBloxPerRowY", pg->aligned[0].w / 64, PG_INT },
+        { "inBloxPerRowUV", pg->aligned[1].w / 64, PG_INT },
+        { "outMCUPerRowY", pg->proper.w / 16, PG_INT },
+        { "outMCUPerRowUV", pg->proper.w / 16, PG_INT },
         { NULL }
       }
     }};
