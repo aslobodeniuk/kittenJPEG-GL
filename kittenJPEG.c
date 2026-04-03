@@ -549,9 +549,9 @@ void parse_bitmap_data(picture_t * const pic, PGCtx *pg)
   printf ("IMAGE W = %d, H = %d\n",
       pg->proper.w, pg->proper.h);
 
-  pg_set_component_dimensions (pg, 0);
-  pg_set_component_dimensions (pg, 1);
-  pg_set_component_dimensions (pg, 2);
+  pg_set_component_dimensions (pg, 0, pic->components_data[0].xi, pic->components_data[0].yi);
+  pg_set_component_dimensions (pg, 1, pic->components_data[0].xi, pic->components_data[0].yi);
+  pg_set_component_dimensions (pg, 2, pic->components_data[0].xi, pic->components_data[0].yi);
 
   kitten_dump = (float*)malloc (pg->aligned[0].w * pg->aligned[0].h  * sizeof (float));
   

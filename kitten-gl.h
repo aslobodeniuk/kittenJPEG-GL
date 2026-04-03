@@ -142,7 +142,7 @@ static struct {
     .output_format = GL_RGB,
     .code = "#version 300 es\n"
     "precision lowp float;\n"
-    "precision lowp int;\n"
+    "precision highp int;\n" // NOTE: can use lowp on small images
     "out vec4 fragColor;\n"
     "uniform sampler2D yuvInpY;\n"
     "uniform sampler2D yuvInpU;\n"
@@ -157,26 +157,25 @@ static struct {
     "      return clamp (vec4 (r, g, b, 255.0) / 255.0, 0.0, 1.0);\n"  
     "    }\n"
 
-    "    ivec2 remap_coords (int x, int y, int in_width, int out_width)\n"
-    "    {\n"
-    "        int out_bpl = out_width / 8;\n"
-    "        int block_id = (y / 8) * out_bpl + x / 8;\n"
-    "        int in_bpl = in_width / 64;\n"
-    "        int in_by = block_id / in_bpl;\n"
-    "        int in_bx = (block_id % in_bpl) * 64;\n"
-    "        int in_y = in_by;\n"
 
-    "        int in_inbx =  (y % 8) + 8 * ((x % 8));\n"
-    "        int in_x = in_bx + in_inbx;\n"
-    "        return ivec2(in_x, in_y);\n"
-    "    }\n"
+    "ivec2 remap_coords_uv420(int x, int y, int blocks_per_row_uv, int chroma_width)\n"
+    "{\n"
+    "    int cx = x >> 1;\n"
+    "    int cy = y >> 1;\n"
+    "\n"
+    "    int out_bpl = (chroma_width + 7) >> 3;        // chroma_width / 8\n"
+    "    int block_id = (cy >> 3) * out_bpl + (cx >> 3);\n"
+    "\n"
+    "    int in_by = block_id / blocks_per_row_uv;\n"
+    "    int in_bx = (block_id % blocks_per_row_uv) * 64;\n"
+    "\n"
+    "    int in_inbx = (cy & 7) + 8 * (cx & 7);\n"
+    "    return ivec2(in_bx + in_inbx, in_by);\n"
+    "}\n"
 
     "    ivec2 remap_coordsY (int x, int y, int in_width, int out_width)\n"
     "    {\n"
-    "        int out_bpl = out_width / 8;\n"
-
-    // COP ----
-    "        int mcu_per_row = out_width / 16;\n"
+    "        int mcu_per_row = (out_width + 15)/ 16;\n"
     "        int mcu_x = x / 16;\n"
     "        int mcu_y = y / 16;\n"
     "        int mcu_id = mcu_y * mcu_per_row + mcu_x;\n"
@@ -184,10 +183,9 @@ static struct {
     "        int sub_y = (y / 8) & 1;\n"
     "        int y_sub_id = sub_y * 2 + sub_x;\n"
     "        int block_id = mcu_id * 4 + y_sub_id;\n"
-    // -------
-    "        int in_bpl = in_width / 64;\n"
-    "        int in_by = block_id / in_bpl;\n"
-    "        int in_bx = (block_id % in_bpl) * 64;\n"
+    "        int in_mcu_per_row = (in_width + 63)/ 64;\n"
+    "        int in_by = block_id / in_mcu_per_row;\n"
+    "        int in_bx = (block_id % in_mcu_per_row) * 64;\n"
     "        int in_y = in_by;\n"
 
     "        int in_inbx =  (y % 8) + 8 * ((x % 8));\n"
@@ -201,12 +199,10 @@ static struct {
     
     "    ivec2 outPixel = ivec2(gl_FragCoord.xy);\n"
     "    ivec2 inPixelY = remap_coordsY (outPixel.x, (outHeight - outPixel.y - 1), width, outWidth);\n"
-    "    ivec2 inPixelCr = remap_coords (outPixel.x / 2, (outHeight - outPixel.y - 1) / 2, width / 2, outWidth / 2);\n"
-    "    ivec2 inPixelCb = remap_coords (outPixel.x / 2, (outHeight - outPixel.y - 1) / 2, width / 2, outWidth / 2);\n"
+    "    ivec2 inPixelCrCb = remap_coords_uv420(outPixel.x, outHeight - outPixel.y - 1, (width + 127) / 128, outWidth / 2);"
     "    float yy = texelFetch(yuvInpY, inPixelY, 0).r;\n"
-    // fixme: add uniforms for uH uV and vH vV
-    "    float u = texelFetch(yuvInpU, ivec2(inPixelCb.x, inPixelCb.y), 0).r;\n"
-    "    float v = texelFetch(yuvInpV, ivec2(inPixelCr.x, inPixelCr.y), 0).r;\n"
+    "    float u = texelFetch(yuvInpU, ivec2(inPixelCrCb.x, inPixelCrCb.y), 0).r;\n"
+    "    float v = texelFetch(yuvInpV, ivec2(inPixelCrCb.x, inPixelCrCb.y), 0).r;\n"
     "    fragColor = yuv_to_rgb (yy, u - 128.0, v - 128.0);\n"
     "}\n",
   }
@@ -452,17 +448,25 @@ static int
 pg_draw_step_draw (PGDrawStep * ds, GLuint vao) {
   glBindFramebuffer(GL_FRAMEBUFFER, ds->framebuffer.framebuffer);
   glViewport(0, 0, ds->init.w, ds->init.h);
+  glDisable(GL_SCISSOR_TEST); // perf?
   glClear(GL_COLOR_BUFFER_BIT);
+
   rf_use_shader_program (GL_TEXTURE_2D, ds->shader_prog, ds->init.unis);
   rf_draw_to_target_buffer (vao);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 static int
-pg_init_jpegdec ()
+pg_init_jpegdec (PGX11Window  *pgw)
 {
-  printf ("GL: %s\n", glGetString(GL_VERSION));
+  printf("GL_VERSION  = %s\n", (const char*)glGetString(GL_VERSION));
+  printf("GL_VENDOR   = %s\n", (const char*)glGetString(GL_VENDOR));
+  printf("GL_RENDERER = %s\n", (const char*)glGetString(GL_RENDERER));
 
+  printf("EGL_VERSION  = %s\n", eglQueryString(pgw->x_dpy, EGL_VERSION));
+  printf("EGL_VENDOR   = %s\n", eglQueryString(pgw->x_dpy, EGL_VENDOR));
+  printf("EGL_EXT      = %s\n", eglQueryString(pgw->x_dpy, EGL_EXTENSIONS));
+  
   // TODO: don't require window,
   // get headless context from the display.
   // But then we mast be able to attach to windows context too...
@@ -486,7 +490,7 @@ void kitten_gl_show (PGCtx *pg, const char* filename) {
   pg_window_open_x11 (&pgw, 1024, 1024, title);
   pg_window_bind_context_egl (&pgw);
   
-  pg_init_jpegdec ();
+  pg_init_jpegdec (&pgw);
 
   GLuint zigzagInpY = rf_create_texture(pg->data[0], pg->aligned[0].w, pg->aligned[0].h);
   GLuint zigzagInpU = rf_create_texture(pg->data[1], pg->aligned[1].w, pg->aligned[1].h);

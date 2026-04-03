@@ -11,12 +11,12 @@ typedef struct {
 } PGCtx;
 
 static void
-pg_set_component_dimensions (PGCtx *pg, int component)
+pg_set_component_dimensions (PGCtx *pg, int component, int w, int h)
 {
   int dH = component == 0 ? 1 : 2; // FIXME: Hmax, Vmax, H, V
-  int space = ((pg->proper.w + dH - 1)/ dH) * ((pg->proper.h + dH - 1) / dH);
+  int space = ((w + dH - 1)/ dH) * ((h + dH - 1) / dH);
   
-  pg->aligned[component].w = ceil_to_multiple_of ((pg->proper.w + dH - 1) / dH, 64);
+  pg->aligned[component].w = ceil_to_multiple_of ((w + dH - 1) / dH, 64);
   pg->aligned[component].h = ceil_to_multiple_of (((space + pg->aligned[component].w - 1) / pg->aligned[component].w), 2);
 }
 
