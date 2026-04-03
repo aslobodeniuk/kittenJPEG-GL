@@ -40,7 +40,9 @@ typedef struct {
   Atom WM_DELETE_WINDOW;
   EGLDisplay egl_dpy;
   EGLContext ctx;
-  EGLSurface surf;  
+  EGLSurface surf;
+  int width;
+  int height;
 } PGX11Window;
 
 static int pg_window_open_x11 (PGX11Window *pgw, int width, int height, const char *title)
@@ -51,6 +53,9 @@ static int pg_window_open_x11 (PGX11Window *pgw, int width, int height, const ch
       goto bad;
     }
 
+    pgw->width = width;
+    pgw->height = height;
+    
     int screen = DefaultScreen(x_dpy);
     Window root = RootWindow(x_dpy, screen);
     
@@ -204,6 +209,8 @@ static int pg_window_loop (PGX11Window *pgw)
         running = 0;
     } else if (ev.type == ConfigureNotify) {
       // Export as something??
+      pgw->width = ev.xconfigure.width;
+      pgw->height = ev.xconfigure.height;
       glViewport(0, 0, ev.xconfigure.width, ev.xconfigure.height);
     } else if (ev.type == KeyPress) {
       running = 0;

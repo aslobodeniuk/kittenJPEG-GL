@@ -268,7 +268,7 @@ GLuint pg_compile_shader(GLenum type, const char* src)
   return shader;
 }
 
-GLuint rf_gen_target_buffer ()
+GLuint pg_gen_target_buffer ()
 {
   static const float quad[] = {
     // pos      // tex
@@ -395,7 +395,7 @@ RFFb rf_make_framebuffer (GLenum format, int width, int height)
   return ret;
 }
 
-GLuint rf_create_texture(const float* data, int width, int height) {
+GLuint pg_create_texture(const float* data, int width, int height) {
     GLuint tex;
     glGenTextures(1, &tex);
     glActiveTexture(GL_TEXTURE0);
@@ -476,54 +476,61 @@ pg_init_jpegdec (PGX11Window  *pgw)
   pg_compile_all_shaders ();  
 }
 
+enum {
+  PG_DRAW_ZZ_TO_DCT_Y,
+  PG_DRAW_ZZ_TO_DCT_U,
+  PG_DRAW_ZZ_TO_DCT_V,
+  PG_DRAW_DCT_TO_Y,
+  PG_DRAW_DCT_TO_U,
+  PG_DRAW_DCT_TO_V,
+  PG_DRAW_YUV_TO_RGB,
+  PG_DRAW_RGB_TO_WINDOW,
+  PG_DRAW_END
+};
+
+typedef struct {
+  PGDrawStep order[PG_DRAW_END];
+  GLuint vao;
+} PGDrawen;
+
 static int
-pg_jpegdec_open (PGCtx *pg) // Not really an open, also uploads for now
+pg_jpegdec_build_programs (PGCtx *pg, PGDrawen *pgd, PGX11Window  *pgw) // Unite these structures ?
 {
+
+// Don't realloc if the width/height haven't got changed?
+
+  // TODO: build programs before we upload the data!!
+  GLuint zigzagInpY = pg_create_texture(pg->data[0], pg->aligned[0].w, pg->aligned[0].h);
+  GLuint zigzagInpU = pg_create_texture(pg->data[1], pg->aligned[1].w, pg->aligned[1].h);
+  GLuint zigzagInpV = pg_create_texture(pg->data[2], pg->aligned[2].w, pg->aligned[2].h);
   
-}
-
-#define KITTEN_WINDOW_TITLE "JPEG decoder shader : "
-
-void kitten_gl_show (PGCtx *pg, const char* filename) {
-  PGX11Window pgw;
-  char title[256] = KITTEN_WINDOW_TITLE;
-  strncat (title, filename, sizeof(title) - sizeof (KITTEN_WINDOW_TITLE) - 1);
-  
-  // Split to things?
-  pg_window_open_x11 (&pgw, 1024, 1024, title);
-  pg_window_bind_context_egl (&pgw);
-  
-  pg_init_jpegdec (&pgw);
-
-  GLuint zigzagInpY = rf_create_texture(pg->data[0], pg->aligned[0].w, pg->aligned[0].h);
-  GLuint zigzagInpU = rf_create_texture(pg->data[1], pg->aligned[1].w, pg->aligned[1].h);
-  GLuint zigzagInpV = rf_create_texture(pg->data[2], pg->aligned[2].w, pg->aligned[2].h);
-
-  PGDrawStep zigzag_to_dct_y = {
-    .init = {
-      .w = pg->aligned[0].w,
-      .h = pg->aligned[0].h,
-      .shader = PG_SHADER_ZZ_TO_DCT,
-      .unis = {
-        { "zigzagInpP", zigzagInpY, PG_TEXTURE },
-        { "qTable", (uint64_t)&pg->qtable[0][0], 64 },
-        { NULL }
+  pgd->order[PG_DRAW_ZZ_TO_DCT_Y] = ((PGDrawStep){
+      .init = {
+        .w = pg->aligned[0].w,
+        .h = pg->aligned[0].h,
+        .shader = PG_SHADER_ZZ_TO_DCT,
+        .unis = {
+          { "zigzagInpP", zigzagInpY, PG_TEXTURE },
+          { "qTable", (uint64_t)&pg->qtable[0][0], 64 },
+          { NULL }
+        }
       }
-    }};
+      });
 
-  PGDrawStep zigzag_to_dct_u = {
-    .init = {
-      .w = pg->aligned[1].w,
-      .h = pg->aligned[1].h,
-      .shader = PG_SHADER_ZZ_TO_DCT,
-      .unis = {
-        { "zigzagInpP", zigzagInpU, PG_TEXTURE },
-        { "qTable", (uint64_t)&pg->qtable[1][0], 64 },
-        { NULL }
+  pgd->order[PG_DRAW_ZZ_TO_DCT_U] = (PGDrawStep){
+      .init = {
+        .w = pg->aligned[1].w,
+        .h = pg->aligned[1].h,
+        .shader = PG_SHADER_ZZ_TO_DCT,
+        .unis = {
+          { "zigzagInpP", zigzagInpU, PG_TEXTURE },
+          { "qTable", (uint64_t)&pg->qtable[1][0], 64 },
+          { NULL }
+        }
       }
-    }};
+  };
 
-  PGDrawStep zigzag_to_dct_v = {
+  pgd->order[PG_DRAW_ZZ_TO_DCT_V] = (PGDrawStep){
     .init = {
       .w = pg->aligned[2].w,
       .h = pg->aligned[2].h,
@@ -535,59 +542,58 @@ void kitten_gl_show (PGCtx *pg, const char* filename) {
       }
     }};
 
-  /* The redundancy is that we could create 3 programs of 1 shader.
-   * TODO: reuse programs of the same shader (take is_window into account) */
-  pg_draw_step_compile (&zigzag_to_dct_y);
-  pg_draw_step_compile (&zigzag_to_dct_u);
-  pg_draw_step_compile (&zigzag_to_dct_v);
+  /* TODO: programs of the same shader must be reused,
+   * by just setting other uniforms each time */
+  pg_draw_step_compile (&pgd->order[PG_DRAW_ZZ_TO_DCT_Y]);
+  pg_draw_step_compile (&pgd->order[PG_DRAW_ZZ_TO_DCT_U]);
+  pg_draw_step_compile (&pgd->order[PG_DRAW_ZZ_TO_DCT_V]);
 
-  PGDrawStep dct_to_y = {
+  pgd->order[PG_DRAW_DCT_TO_Y] = (PGDrawStep){
     .init = {
       .w = pg->aligned[0].w,
       .h = pg->aligned[0].h,
       .shader = PG_SHADER_DCT_TO_P,
       .unis = {
-        { "dctInpP", zigzag_to_dct_y.framebuffer.texture, PG_TEXTURE },
+        { "dctInpP", pgd->order[PG_DRAW_ZZ_TO_DCT_Y].framebuffer.texture, PG_TEXTURE },
         { NULL }
       }
     }};
 
-  PGDrawStep dct_to_u = {
+  pgd->order[PG_DRAW_DCT_TO_U] = (PGDrawStep){
     .init = {
       .w = pg->aligned[1].w,
       .h = pg->aligned[1].h,
       .shader = PG_SHADER_DCT_TO_P,
       .unis = {
-        { "dctInpP", zigzag_to_dct_u.framebuffer.texture, PG_TEXTURE },
+        { "dctInpP", pgd->order[PG_DRAW_ZZ_TO_DCT_U].framebuffer.texture, PG_TEXTURE },
         { NULL }
       }
     }};
 
-  PGDrawStep dct_to_v = {
+  pgd->order[PG_DRAW_DCT_TO_V] = (PGDrawStep){
     .init = {
       .w = pg->aligned[2].w,
       .h = pg->aligned[2].h,
       .shader = PG_SHADER_DCT_TO_P,
       .unis = {
-        { "dctInpP", zigzag_to_dct_v.framebuffer.texture, PG_TEXTURE },
+        { "dctInpP", pgd->order[PG_DRAW_ZZ_TO_DCT_V].framebuffer.texture, PG_TEXTURE },
         { NULL }
       }
     }};
 
-  pg_draw_step_compile (&dct_to_y);
-  pg_draw_step_compile (&dct_to_u);
-  pg_draw_step_compile (&dct_to_v);
-  
-  PGDrawStep yuv_to_rgb = {
+  pg_draw_step_compile (&pgd->order[PG_DRAW_DCT_TO_Y]);
+  pg_draw_step_compile (&pgd->order[PG_DRAW_DCT_TO_U]);
+  pg_draw_step_compile (&pgd->order[PG_DRAW_DCT_TO_V]);  
+
+  pgd->order[PG_DRAW_YUV_TO_RGB] = (PGDrawStep){
     .init = {
       .w = pg->proper.w,
       .h = pg->proper.h,
       .shader = PG_SHADER_YUV_TO_RGB,
       .unis = {
-        { "yuvInpY", dct_to_y.framebuffer.texture, PG_TEXTURE },
-        { "yuvInpU", dct_to_u.framebuffer.texture, PG_TEXTURE },
-        { "yuvInpV", dct_to_v.framebuffer.texture, PG_TEXTURE },
-//        { "outWidth", pg->proper.w, PG_INT },
+        { "yuvInpY", pgd->order[PG_DRAW_DCT_TO_Y].framebuffer.texture, PG_TEXTURE },
+        { "yuvInpU", pgd->order[PG_DRAW_DCT_TO_U].framebuffer.texture, PG_TEXTURE },
+        { "yuvInpV", pgd->order[PG_DRAW_DCT_TO_V].framebuffer.texture, PG_TEXTURE },
         { "outHeight", pg->proper.h, PG_INT },
         { "inBloxPerRowY", pg->aligned[0].w / 64, PG_INT },
         { "inBloxPerRowUV", pg->aligned[1].w / 64, PG_INT },
@@ -597,43 +603,57 @@ void kitten_gl_show (PGCtx *pg, const char* filename) {
       }
     }};
 
-  pg_draw_step_compile (&yuv_to_rgb);
+  pg_draw_step_compile (&pgd->order[PG_DRAW_YUV_TO_RGB]);
 
-  PGDrawStep rgb_to_window = {
+  pgd->order[PG_DRAW_RGB_TO_WINDOW] = (PGDrawStep){
     .init = {
       .is_window = 1,
-      .w = 1024, // connect to window creation??
-      .h = 1024,
+      .w = pgw->width,
+      .h = pgw->height,
       .shader = PG_SHADER_FRAGMENT_PASSTHROUGH,
       .unis = {
-        { "rgbTex", yuv_to_rgb.framebuffer.texture, PG_TEXTURE },
+        { "rgbTex", pgd->order[PG_DRAW_YUV_TO_RGB].framebuffer.texture, PG_TEXTURE },
         { NULL }
       }
     }};
 
-  pg_draw_step_compile (&rgb_to_window);
+  pg_draw_step_compile (&pgd->order[PG_DRAW_RGB_TO_WINDOW]);
+  pgd->vao = pg_gen_target_buffer ();
 
-  GLuint vao = rf_gen_target_buffer ();
-  PGDrawStep * drawen [] = {
-    // phase zz --> dct
-    &zigzag_to_dct_y,
-    &zigzag_to_dct_u,
-    &zigzag_to_dct_v,
-    // phase dct --> yuv
-    &dct_to_y,
-    &dct_to_u,
-    &dct_to_v,
-    // phase (y, u, v) --> rgb
-    &yuv_to_rgb,
-    // render to the window
-    &rgb_to_window,
-    // hapi
-    NULL
-  };
+  // TODO: compile all in 1 func,
+  // by assigning a pointer to a texture index, not an actual index
+
+  return 0;
+}
+
+static int
+pg_jpegdec_draw_all (PGDrawen *pgd)
+{
+  // FIXME: split into decode (upload & decode) and into draw, or share the texture
+
+  for (int i = 0; i < PG_N_ELEMENTS (pgd->order); i++) {
+    pg_draw_step_draw (&pgd->order[i], pgd->vao);
+  }
+}
+
+#define KITTEN_WINDOW_TITLE "JPEG decoder shader : "
+
+void kitten_gl_show (PGCtx *pg, const char* filename) {
+  PGDrawen pgd;
+  PGX11Window pgw; // unite these structures?
+  char title[256] = KITTEN_WINDOW_TITLE;
+  strncat (title, filename, sizeof(title) - sizeof (KITTEN_WINDOW_TITLE) - 1);
+  
+  // Split to things?
+  pg_window_open_x11 (&pgw, 1024, 1024, title);
+  pg_window_bind_context_egl (&pgw);
+  
+  pg_init_jpegdec (&pgw);
+  pg_jpegdec_build_programs (pg, &pgd, &pgw);
 
   while (pg_window_loop (&pgw)) {
-    for (int i = 0; drawen[i] != NULL; i++)
-      pg_draw_step_draw (drawen[i], vao);
+
+    pg_jpegdec_draw_all (&pgd);
     
     pg_window_swap_buffers (&pgw);
   }
