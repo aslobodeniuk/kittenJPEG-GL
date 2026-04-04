@@ -211,17 +211,6 @@ static struct {
   }
 };
 
-enum {
-  PG_INT = -1,
-  PG_TEXTURE = 0
-};
-
-typedef struct {
-  const char *name;
-  uint64_t thing;
-  int amount; // -1 == int, 0 == texture, > 0 == array
-} RFUniform;
-
 void pg_program_link_error (GLuint prog)
 {
   GLint logLength;
@@ -310,23 +299,41 @@ int pg_compile_all_shaders (void)
   }
 }
 
-GLuint pg_create_shader_program (PGShader fragment, RFUniform *unis)
+
+enum {
+  PG_INT = -1,
+  PG_TEXTURE = 0
+};
+
+typedef struct {
+  const char *name;
+
+  uint64_t thing;
+  int amount; // -1 == int, 0 == texture, > 0 == array
+} PGUniform;
+
+GLuint pg_create_shader_program (PGShader fragment)
 {
-  GLuint shader = glCreateProgram();
-  glAttachShader(shader, PGShaderBase[PG_SHADER_VERTEX_PASSTHROUGH].sh); // vertex shader always pthrough
-  glAttachShader(shader, PGShaderBase[fragment].sh);
-  glLinkProgram(shader);
+  GLuint prog = glCreateProgram();
+  glAttachShader(prog, PGShaderBase[PG_SHADER_VERTEX_PASSTHROUGH].sh); // vertex shader always pthrough
+  glAttachShader(prog, PGShaderBase[fragment].sh);
+  glLinkProgram(prog);
 
   GLint linkStatus;
-  glGetProgramiv(shader, GL_LINK_STATUS, &linkStatus);
+  glGetProgramiv(prog, GL_LINK_STATUS, &linkStatus);
   if (!linkStatus) {
-    pg_program_link_error (shader);
+    pg_program_link_error (prog);
   }
+  
+  return prog;
+}
 
-  glUseProgram(shader);
+void pg_shader_program_set_uniforms (GLuint prog, PGUniform *unis)
+{
+  glUseProgram(prog);
   int t = 0;
   for (int i = 0; unis[i].name != NULL; i++) {
-    GLint location = glGetUniformLocation(shader, unis[i].name);
+    GLint location = glGetUniformLocation(prog, unis[i].name);
     if (unis[i].amount == PG_INT) {
       glUniform1i(location, (int)unis[i].thing);
     } else if (unis[i].amount == PG_TEXTURE) {
@@ -334,27 +341,24 @@ GLuint pg_create_shader_program (PGShader fragment, RFUniform *unis)
     } else {
       glUniform1fv(location, unis[i].amount, (float*)unis[i].thing);
     }
-  }
-
-  return shader;
+  }  
 }
 
-void rf_use_shader_program (GLenum tt, GLuint shader, RFUniform *unis)
+void pg_use_shader_program (GLenum tt, GLuint prog, PGUniform *unis)
 {
-  glUseProgram(shader);
+  glUseProgram(prog);
   int t = 0;
   for (int i = 0; unis[i].name != NULL; i++) {
-    /* if amount != 1 it's not a texture but an array */
-    if (unis[i].amount != 0)
+    if (unis[i].amount != PG_TEXTURE)
       continue;
     
     glActiveTexture(GL_TEXTURE0 + t);
-    glBindTexture(tt, unis[i].thing);
+    glBindTexture(tt, *((GLuint *)unis[i].thing));
     t++;
   }  
 }
 
-void rf_draw_to_target_buffer (GLuint vao)
+void pg_draw_to_target_buffer (GLuint vao)
 {
   glBindVertexArray(vao);
   glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
@@ -362,11 +366,11 @@ void rf_draw_to_target_buffer (GLuint vao)
 
 typedef struct {
   GLuint framebuffer, texture;
-} RFFb;
+} PGFb;
 
-RFFb rf_make_framebuffer (GLenum format, int width, int height)
+PGFb pg_make_framebuffer (GLenum format, int width, int height)
 {
-  RFFb ret;
+  PGFb ret;
 
   GLenum err;  
   
@@ -395,7 +399,20 @@ RFFb rf_make_framebuffer (GLenum format, int width, int height)
   return ret;
 }
 
-GLuint pg_create_texture(const float* data, int width, int height) {
+int pg_upload_to_texture (GLuint tex, int width, int height, const float* data) {
+  glBindTexture(GL_TEXTURE_2D, tex);
+
+  //  glPixelStorei(GL_UNPACK_ALIGNMENT, 16);
+  glTexSubImage2D(GL_TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      GL_RED,
+      GL_FLOAT,
+      data);
+}
+
+GLuint pg_create_texture(int width, int height) {
     GLuint tex;
     glGenTextures(1, &tex);
     glActiveTexture(GL_TEXTURE0);
@@ -406,18 +423,17 @@ GLuint pg_create_texture(const float* data, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    // upload
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, data);
-    GLint maxTexSize;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexSize);
-    printf("Max texture size: %d\n", maxTexSize);
-    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, NULL);
     GLenum err;
     while ((err = glGetError()) != GL_NO_ERROR) {
       printf("OpenGL error: %x\n", err);
       exit (1);
     }
-
+    
+    GLint maxTexSize;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexSize);
+    printf("Max texture size: %d\n", maxTexSize);
+    
     // unbind
     glBindTexture(GL_TEXTURE_2D, 0);
     return tex;
@@ -427,20 +443,21 @@ typedef struct {
   struct {
     int w, h;
     PGShader shader;
-    RFUniform unis[16];
+    PGUniform unis[16];
     int is_window;
   } init;
 
-  RFFb framebuffer;
+  PGFb framebuffer;
   GLuint shader_prog;   
 } PGDrawStep;
 
 static int
 pg_draw_step_compile (PGDrawStep * ds) {
-  ds->shader_prog = pg_create_shader_program (ds->init.shader, ds->init.unis);
-
+  ds->shader_prog = pg_create_shader_program (ds->init.shader);
+  pg_shader_program_set_uniforms (ds->shader_prog, ds->init.unis);
+  
   if (ds->init.is_window == 0) {
-    ds->framebuffer = rf_make_framebuffer (PGShaderBase[ds->init.shader].output_format,
+    ds->framebuffer = pg_make_framebuffer (PGShaderBase[ds->init.shader].output_format,
         ds->init.w, ds->init.h);
   }
 
@@ -454,8 +471,10 @@ pg_draw_step_draw (PGDrawStep * ds, GLuint vao) {
   glDisable(GL_SCISSOR_TEST); // perf?
   glClear(GL_COLOR_BUFFER_BIT);
 
-  rf_use_shader_program (GL_TEXTURE_2D, ds->shader_prog, ds->init.unis);
-  rf_draw_to_target_buffer (vao);
+  // FIXME: if the shader program is the same - don't have to rebind it,
+  // but yes set new uniforms
+  pg_use_shader_program (GL_TEXTURE_2D, ds->shader_prog, ds->init.unis);
+  pg_draw_to_target_buffer (vao);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -465,6 +484,7 @@ pg_init_jpegdec (PGX11Window  *pgw)
   printf("GL_VERSION  = %s\n", (const char*)glGetString(GL_VERSION));
   printf("GL_VENDOR   = %s\n", (const char*)glGetString(GL_VENDOR));
   printf("GL_RENDERER = %s\n", (const char*)glGetString(GL_RENDERER));
+  printf("GL_EXTENSIONS = %s\n", (const char*)glGetString(GL_EXTENSIONS));
 
   printf("EGL_VERSION  = %s\n", eglQueryString(pgw->x_dpy, EGL_VERSION));
   printf("EGL_VENDOR   = %s\n", eglQueryString(pgw->x_dpy, EGL_VENDOR));
@@ -491,149 +511,181 @@ enum {
 typedef struct {
   PGDrawStep order[PG_DRAW_END];
   GLuint vao;
+  GLuint zigzagInpY; // FIXMI: 3 planes is lame, should take MCU stream
+  GLuint zigzagInpU;
+  GLuint zigzagInpV;
 } PGDrawen;
+
+#define PG_UNIFORM_TEX(name, tex) { name, (uint64_t)&(tex), PG_TEXTURE }
+#define PG_UNIFORM_FARRAY(name, farr, amount) {name, (uint64_t)(farr), amount }
+#define PG_UNIFORM_INT(name, val) {name, (uint64_t)(val), PG_INT }
+#define PG_UNIFORM_YEAH { NULL }
+
+#define PGD_FB_TEXTURE(p, enm) p->order[enm].framebuffer.texture
 
 static int
 pg_jpegdec_build_programs (PGCtx *pg, PGDrawen *pgd, PGX11Window  *pgw) // Unite these structures ?
-{
-
-// Don't realloc if the width/height haven't got changed?
-
-  // TODO: build programs before we upload the data!!
-  GLuint zigzagInpY = pg_create_texture(pg->data[0], pg->aligned[0].w, pg->aligned[0].h);
-  GLuint zigzagInpU = pg_create_texture(pg->data[1], pg->aligned[1].w, pg->aligned[1].h);
-  GLuint zigzagInpV = pg_create_texture(pg->data[2], pg->aligned[2].w, pg->aligned[2].h);
-  
-  pgd->order[PG_DRAW_ZZ_TO_DCT_Y] = ((PGDrawStep){
-      .init = {
-        .w = pg->aligned[0].w,
-        .h = pg->aligned[0].h,
-        .shader = PG_SHADER_ZZ_TO_DCT,
-        .unis = {
-          { "zigzagInpP", zigzagInpY, PG_TEXTURE },
-          { "qTable", (uint64_t)&pg->qtable[0][0], 64 },
-          { NULL }
+{  
+  *pgd = (PGDrawen){
+    .vao = pg_gen_target_buffer (),
+    .zigzagInpY = pg_create_texture(pg->aligned[0].w, pg->aligned[0].h),
+    .zigzagInpU = pg_create_texture(pg->aligned[1].w, pg->aligned[1].h),
+    .zigzagInpV = pg_create_texture(pg->aligned[2].w, pg->aligned[2].h),
+    .order = {
+      [PG_DRAW_ZZ_TO_DCT_Y] = {
+        .init = {
+          .w = pg->aligned[0].w,
+          .h = pg->aligned[0].h,
+          .shader = PG_SHADER_ZZ_TO_DCT,
+          .unis = {
+            PG_UNIFORM_TEX ("zigzagInpP", pgd->zigzagInpY),
+            PG_UNIFORM_FARRAY ("qTable", &pg->qtable[0][0], 64),
+            PG_UNIFORM_YEAH
+          }
+        }
+      },
+      [PG_DRAW_ZZ_TO_DCT_U] = (PGDrawStep){
+        .init = {
+          .w = pg->aligned[1].w,
+          .h = pg->aligned[1].h,
+          .shader = PG_SHADER_ZZ_TO_DCT,
+          .unis = {
+            PG_UNIFORM_TEX ("zigzagInpP", pgd->zigzagInpU),
+            PG_UNIFORM_FARRAY ("qTable", &pg->qtable[1][0], 64),
+            PG_UNIFORM_YEAH
+          }
+        }
+      },
+      [PG_DRAW_ZZ_TO_DCT_V] = (PGDrawStep){
+        .init = {
+          .w = pg->aligned[2].w,
+          .h = pg->aligned[2].h,
+          .shader = PG_SHADER_ZZ_TO_DCT,
+          .unis = {
+            PG_UNIFORM_TEX ("zigzagInpP", pgd->zigzagInpV),
+            PG_UNIFORM_FARRAY ("qTable", &pg->qtable[2][0], 64 ),
+            PG_UNIFORM_YEAH
+          }
+        }
+      },
+      [PG_DRAW_DCT_TO_Y] = (PGDrawStep){
+        .init = {
+          .w = pg->aligned[0].w,
+          .h = pg->aligned[0].h,
+          .shader = PG_SHADER_DCT_TO_P,
+          .unis = {
+            PG_UNIFORM_TEX ("dctInpP", PGD_FB_TEXTURE (pgd, PG_DRAW_ZZ_TO_DCT_Y)),
+            PG_UNIFORM_YEAH
+          }
+        }
+      },
+      [PG_DRAW_DCT_TO_U] = (PGDrawStep){
+        .init = {
+          .w = pg->aligned[1].w,
+          .h = pg->aligned[1].h,
+          .shader = PG_SHADER_DCT_TO_P,
+          .unis = {
+            PG_UNIFORM_TEX ("dctInpP", PGD_FB_TEXTURE (pgd, PG_DRAW_ZZ_TO_DCT_U)),
+            PG_UNIFORM_YEAH
+          }
+        }
+      },
+      [PG_DRAW_DCT_TO_V] = (PGDrawStep){
+        .init = {
+          .w = pg->aligned[2].w,
+          .h = pg->aligned[2].h,
+          .shader = PG_SHADER_DCT_TO_P,
+          .unis = {
+            PG_UNIFORM_TEX ("dctInpP", PGD_FB_TEXTURE (pgd, PG_DRAW_ZZ_TO_DCT_V)),
+            PG_UNIFORM_YEAH
+          }
+        }
+      },
+      [PG_DRAW_YUV_TO_RGB] = (PGDrawStep){
+        .init = {
+          .w = pg->proper.w,
+          .h = pg->proper.h,
+          .shader = PG_SHADER_YUV_TO_RGB,
+          .unis = {
+            PG_UNIFORM_TEX ("yuvInpY", PGD_FB_TEXTURE (pgd, PG_DRAW_DCT_TO_Y)),
+            PG_UNIFORM_TEX ("yuvInpU", PGD_FB_TEXTURE (pgd, PG_DRAW_DCT_TO_U)),
+            PG_UNIFORM_TEX ("yuvInpV", PGD_FB_TEXTURE (pgd, PG_DRAW_DCT_TO_V)),
+            PG_UNIFORM_INT ("outHeight", pg->proper.h),
+            PG_UNIFORM_INT ("inBloxPerRowY", pg->aligned[0].w / 64),
+            PG_UNIFORM_INT ("inBloxPerRowUV", pg->aligned[1].w / 64),
+            PG_UNIFORM_INT ("outMCUPerRowY", pg->proper.w / 16),
+            PG_UNIFORM_INT ("outMCUPerRowUV", pg->proper.w / 16),
+            PG_UNIFORM_YEAH
+          }
+        }
+      },
+      [PG_DRAW_RGB_TO_WINDOW] = (PGDrawStep){
+        .init = {
+          .is_window = 1,
+          .w = pgw->width,
+          .h = pgw->height,
+          .shader = PG_SHADER_FRAGMENT_PASSTHROUGH,
+          .unis = {
+            PG_UNIFORM_TEX ("rgbTex", PGD_FB_TEXTURE (pgd, PG_DRAW_YUV_TO_RGB)),
+            PG_UNIFORM_YEAH
+          }
         }
       }
-      });
-
-  pgd->order[PG_DRAW_ZZ_TO_DCT_U] = (PGDrawStep){
-      .init = {
-        .w = pg->aligned[1].w,
-        .h = pg->aligned[1].h,
-        .shader = PG_SHADER_ZZ_TO_DCT,
-        .unis = {
-          { "zigzagInpP", zigzagInpU, PG_TEXTURE },
-          { "qTable", (uint64_t)&pg->qtable[1][0], 64 },
-          { NULL }
-        }
-      }
+    }
   };
 
-  pgd->order[PG_DRAW_ZZ_TO_DCT_V] = (PGDrawStep){
-    .init = {
-      .w = pg->aligned[2].w,
-      .h = pg->aligned[2].h,
-      .shader = PG_SHADER_ZZ_TO_DCT,
-      .unis = {
-        { "zigzagInpP", zigzagInpV, PG_TEXTURE },
-        { "qTable", (uint64_t)&pg->qtable[2][0], 64 },
-        { NULL }
-      }
-    }};
-
-  /* TODO: programs of the same shader must be reused,
-   * by just setting other uniforms each time */
-  pg_draw_step_compile (&pgd->order[PG_DRAW_ZZ_TO_DCT_Y]);
-  pg_draw_step_compile (&pgd->order[PG_DRAW_ZZ_TO_DCT_U]);
-  pg_draw_step_compile (&pgd->order[PG_DRAW_ZZ_TO_DCT_V]);
-
-  pgd->order[PG_DRAW_DCT_TO_Y] = (PGDrawStep){
-    .init = {
-      .w = pg->aligned[0].w,
-      .h = pg->aligned[0].h,
-      .shader = PG_SHADER_DCT_TO_P,
-      .unis = {
-        { "dctInpP", pgd->order[PG_DRAW_ZZ_TO_DCT_Y].framebuffer.texture, PG_TEXTURE },
-        { NULL }
-      }
-    }};
-
-  pgd->order[PG_DRAW_DCT_TO_U] = (PGDrawStep){
-    .init = {
-      .w = pg->aligned[1].w,
-      .h = pg->aligned[1].h,
-      .shader = PG_SHADER_DCT_TO_P,
-      .unis = {
-        { "dctInpP", pgd->order[PG_DRAW_ZZ_TO_DCT_U].framebuffer.texture, PG_TEXTURE },
-        { NULL }
-      }
-    }};
-
-  pgd->order[PG_DRAW_DCT_TO_V] = (PGDrawStep){
-    .init = {
-      .w = pg->aligned[2].w,
-      .h = pg->aligned[2].h,
-      .shader = PG_SHADER_DCT_TO_P,
-      .unis = {
-        { "dctInpP", pgd->order[PG_DRAW_ZZ_TO_DCT_V].framebuffer.texture, PG_TEXTURE },
-        { NULL }
-      }
-    }};
-
-  pg_draw_step_compile (&pgd->order[PG_DRAW_DCT_TO_Y]);
-  pg_draw_step_compile (&pgd->order[PG_DRAW_DCT_TO_U]);
-  pg_draw_step_compile (&pgd->order[PG_DRAW_DCT_TO_V]);  
-
-  pgd->order[PG_DRAW_YUV_TO_RGB] = (PGDrawStep){
-    .init = {
-      .w = pg->proper.w,
-      .h = pg->proper.h,
-      .shader = PG_SHADER_YUV_TO_RGB,
-      .unis = {
-        { "yuvInpY", pgd->order[PG_DRAW_DCT_TO_Y].framebuffer.texture, PG_TEXTURE },
-        { "yuvInpU", pgd->order[PG_DRAW_DCT_TO_U].framebuffer.texture, PG_TEXTURE },
-        { "yuvInpV", pgd->order[PG_DRAW_DCT_TO_V].framebuffer.texture, PG_TEXTURE },
-        { "outHeight", pg->proper.h, PG_INT },
-        { "inBloxPerRowY", pg->aligned[0].w / 64, PG_INT },
-        { "inBloxPerRowUV", pg->aligned[1].w / 64, PG_INT },
-        { "outMCUPerRowY", pg->proper.w / 16, PG_INT },
-        { "outMCUPerRowUV", pg->proper.w / 16, PG_INT },
-        { NULL }
-      }
-    }};
-
-  pg_draw_step_compile (&pgd->order[PG_DRAW_YUV_TO_RGB]);
-
-  pgd->order[PG_DRAW_RGB_TO_WINDOW] = (PGDrawStep){
-    .init = {
-      .is_window = 1,
-      .w = pgw->width,
-      .h = pgw->height,
-      .shader = PG_SHADER_FRAGMENT_PASSTHROUGH,
-      .unis = {
-        { "rgbTex", pgd->order[PG_DRAW_YUV_TO_RGB].framebuffer.texture, PG_TEXTURE },
-        { NULL }
-      }
-    }};
-
-  pg_draw_step_compile (&pgd->order[PG_DRAW_RGB_TO_WINDOW]);
-  pgd->vao = pg_gen_target_buffer ();
-
-  // TODO: compile all in 1 func,
-  // by assigning a pointer to a texture index, not an actual index
+  for (int i = 0; i < PG_N_ELEMENTS (pgd->order); i++)
+    pg_draw_step_compile (&pgd->order[i]);
 
   return 0;
 }
 
-static int
-pg_jpegdec_draw_all (PGDrawen *pgd)
-{
-  // FIXME: split into decode (upload & decode) and into draw, or share the texture
+#include <time.h>
 
-  for (int i = 0; i < PG_N_ELEMENTS (pgd->order); i++) {
+static inline uint64_t now_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static uint64_t pg_perf_start () {
+  return now_ns ();
+}
+
+static void pg_perf_end (uint64_t start, const char *phase)
+{
+  uint64_t end = now_ns ();
+  // ----------------------
+  
+  uint64_t ns = end - start;
+  uint64_t ms = ns / 1000000;
+  ns -= ms * 1000000;
+  
+  printf ("Time taken to [%s] = %lu.%lu ms\n", phase, ms, ns);
+}
+
+static int
+pg_jpegdec_decode (PGCtx *pg, PGDrawen *pgd)
+{
+  uint64_t start = pg_perf_start ();
+  
+  pg_upload_to_texture (pgd->zigzagInpY, pg->aligned[0].w, pg->aligned[0].h, pg->data[0]);
+  pg_upload_to_texture (pgd->zigzagInpU, pg->aligned[1].w, pg->aligned[1].h, pg->data[1]);
+  pg_upload_to_texture (pgd->zigzagInpV, pg->aligned[2].w, pg->aligned[2].h, pg->data[2]);
+  
+  for (int i = 0; i < PG_DRAW_RGB_TO_WINDOW; i++) {
     pg_draw_step_draw (&pgd->order[i], pgd->vao);
   }
+  
+  glFinish ();
+
+  pg_perf_end (start, "upload + decode + finish");
+}
+
+static int
+pg_jpegdec_draw_to_window (PGDrawen *pgd)
+{
+  pg_draw_step_draw (&pgd->order[PG_DRAW_RGB_TO_WINDOW], pgd->vao);
 }
 
 #define KITTEN_WINDOW_TITLE "JPEG decoder shader : "
@@ -651,10 +703,11 @@ void kitten_gl_show (PGCtx *pg, const char* filename) {
   pg_init_jpegdec (&pgw);
   pg_jpegdec_build_programs (pg, &pgd, &pgw);
 
+  pg_jpegdec_decode (pg, &pgd);
+  
   while (pg_window_loop (&pgw)) {
 
-    pg_jpegdec_draw_all (&pgd);
-    
+    pg_jpegdec_draw_to_window (&pgd);
     pg_window_swap_buffers (&pgw);
   }
 
