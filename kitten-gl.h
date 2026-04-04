@@ -61,7 +61,7 @@ static struct {
     "precision lowp int;\n"
     "in vec2 texCoord;\n"
     "out vec4 fragColor;\n"
-    "uniform sampler2D zigzagInpP;\n"
+    "uniform lowp isampler2D zigzagInpP;\n"
     "uniform float qTable[64];\n"
 
     "const int zigzag8x8[64] = int[64](\n"
@@ -82,15 +82,15 @@ static struct {
     // We only play on offset over texCoord.x
     // texCoord.y will be the same.
     // zzj represents position inside the block
-    "  int zzj = outPixel.x % 64;\n"
+    "  int zzj = outPixel.x & 63;\n"
     "  ivec2 pos = ivec2("
     "    outPixel.x - zzj + zigzag8x8[zzj],"
     "    outPixel.y"
     "  );\n"
     "  float dequant = qTable[zzj];\n"
-    "  float pixel = texelFetch(zigzagInpP, pos, 0).r;\n"
+    "  float pixel = float(texelFetch(zigzagInpP, pos, 0).r);\n"
     "  pixel *= dequant;\n"
-    "  fragColor = vec4(pixel, 0.0, 0.0, 1.0);\n"    
+    "  fragColor = vec4(pixel, 0.0, 0.0, 1.0);\n"
     "}\n"
   },
   [PG_SHADER_DCT_TO_P] = {
@@ -122,15 +122,15 @@ static struct {
     "      result += idct_sum (coeff, x, y, xk, yk);\n"
     "    }\n"
     "  }\n"
-    "  return result * 0.25f + 128.0f;\n"
+    "  return result * 0.25f;\n"
     "}\n"
 
     "void main() {\n"
     // output position
     "    ivec2 outPixel = ivec2(gl_FragCoord.xy);"
-    "    int x = outPixel.x % 8;\n"
-    "    int y = (outPixel.x % 64) / 8;\n"
-    "    int input_block_x = (outPixel.x / 64) * 64;\n"
+    "    int x = outPixel.x & 7;\n"
+    "    int y = (outPixel.x & 63) / 8;\n"
+    "    int input_block_x = outPixel.x & ~63;\n"
     "    int input_y = outPixel.y;\n"
     // do idct
     "    float pix = idct (input_block_x, input_y, x, y);\n"
@@ -206,7 +206,7 @@ static struct {
     "    float yy = texelFetch(yuvInpY, inPixelY, 0).r;\n"
     "    float u = texelFetch(yuvInpU, ivec2(inPixelCrCb.x, inPixelCrCb.y), 0).r;\n"
     "    float v = texelFetch(yuvInpV, ivec2(inPixelCrCb.x, inPixelCrCb.y), 0).r;\n"
-    "    fragColor = yuv_to_rgb (yy, u - 128.0, v - 128.0);\n"
+    "    fragColor = yuv_to_rgb (yy + 128.0, u, v);\n"
     "}\n",
   }
 };
@@ -399,16 +399,16 @@ PGFb pg_make_framebuffer (GLenum format, int width, int height)
   return ret;
 }
 
-int pg_upload_to_texture (GLuint tex, int width, int height, const float* data) {
+int pg_upload_to_texture (GLuint tex, int width, int height, short* data) {
   glBindTexture(GL_TEXTURE_2D, tex);
-
-  //  glPixelStorei(GL_UNPACK_ALIGNMENT, 16);
+  
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glTexSubImage2D(GL_TEXTURE_2D,
       0,
       0, 0,
       width, height,
-      GL_RED,
-      GL_FLOAT,
+      GL_RED_INTEGER,
+      GL_SHORT,
       data);
 }
 
@@ -417,13 +417,13 @@ GLuint pg_create_texture(int width, int height) {
     glGenTextures(1, &tex);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
-
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R16I, width, height, 0, GL_RED_INTEGER, GL_SHORT, NULL);
     GLenum err;
     while ((err = glGetError()) != GL_NO_ERROR) {
       printf("OpenGL error: %x\n", err);
@@ -484,11 +484,13 @@ pg_init_jpegdec (PGX11Window  *pgw)
   printf("GL_VERSION  = %s\n", (const char*)glGetString(GL_VERSION));
   printf("GL_VENDOR   = %s\n", (const char*)glGetString(GL_VENDOR));
   printf("GL_RENDERER = %s\n", (const char*)glGetString(GL_RENDERER));
+#if 0
   printf("GL_EXTENSIONS = %s\n", (const char*)glGetString(GL_EXTENSIONS));
 
   printf("EGL_VERSION  = %s\n", eglQueryString(pgw->x_dpy, EGL_VERSION));
   printf("EGL_VENDOR   = %s\n", eglQueryString(pgw->x_dpy, EGL_VENDOR));
   printf("EGL_EXT      = %s\n", eglQueryString(pgw->x_dpy, EGL_EXTENSIONS));
+#endif
   
   // TODO: don't require window,
   // get headless context from the display.
@@ -667,19 +669,30 @@ static void pg_perf_end (uint64_t start, const char *phase)
 static int
 pg_jpegdec_decode (PGCtx *pg, PGDrawen *pgd)
 {
+#define BENCH 1
+  
+#if BENCH
+  glFinish();
   uint64_t start = pg_perf_start ();
+#endif
   
   pg_upload_to_texture (pgd->zigzagInpY, pg->aligned[0].w, pg->aligned[0].h, pg->data[0]);
   pg_upload_to_texture (pgd->zigzagInpU, pg->aligned[1].w, pg->aligned[1].h, pg->data[1]);
   pg_upload_to_texture (pgd->zigzagInpV, pg->aligned[2].w, pg->aligned[2].h, pg->data[2]);
+
+#if 0
+  pg_perf_end (start, "upload");
+  start = pg_perf_start ();
+#endif
   
   for (int i = 0; i < PG_DRAW_RGB_TO_WINDOW; i++) {
     pg_draw_step_draw (&pgd->order[i], pgd->vao);
   }
-  
-  glFinish ();
 
-  pg_perf_end (start, "upload + decode + finish");
+#if BENCH
+  glFinish ();
+  pg_perf_end (start, "decode + finish");
+#endif
 }
 
 static int
@@ -702,11 +715,10 @@ void kitten_gl_show (PGCtx *pg, const char* filename) {
   
   pg_init_jpegdec (&pgw);
   pg_jpegdec_build_programs (pg, &pgd, &pgw);
-
-  pg_jpegdec_decode (pg, &pgd);
   
   while (pg_window_loop (&pgw)) {
 
+    pg_jpegdec_decode (pg, &pgd);
     pg_jpegdec_draw_to_window (&pgd);
     pg_window_swap_buffers (&pgw);
   }

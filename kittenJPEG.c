@@ -553,7 +553,7 @@ void parse_bitmap_data(picture_t * const pic, PGCtx *pg)
   pg_set_component_dimensions (pg, 1, pic->components_data[0].xi, pic->components_data[0].yi);
   pg_set_component_dimensions (pg, 2, pic->components_data[0].xi, pic->components_data[0].yi);
 
-  kitten_dump = (float*)malloc (pg->aligned[0].w * pg->aligned[0].h  * sizeof (float));
+//  kitten_dump = (float*)malloc (pg->aligned[0].w * pg->aligned[0].h  * sizeof (float));
   
   for (int gg= 0; gg < 3; gg++) {
     int mcu_size = pic->components_data[gg].V*pic->components_data[gg].H;
@@ -562,7 +562,7 @@ void parse_bitmap_data(picture_t * const pic, PGCtx *pg)
     printf ("[%d] MCU SIZE = %d, TOT SIZE = %d, aligned w = %d, aligned h = %d\n",
         gg, mcu_size, totsize, pg->aligned[gg].w, pg->aligned[gg].h);
 
-    pg->data[gg] = malloc (sizeof (float) * totsize);
+    pg->data[gg] = malloc (totsize * 2);
     pg->pos[gg] = 0;
 
     // only 2 quant tables on input, but 3 that we use

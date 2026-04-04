@@ -1,7 +1,7 @@
 /* Adaptation Layer */
 
 typedef struct {
-  float *data[3];
+  short *data[3];
   int pos[3];
   struct {
     int w, h;
@@ -34,7 +34,7 @@ static void MATREX_2PG (PGCtx *pg, matrix8x8_t matrix, int component) {
   int u, v;
   for(u=0; u<8; u++)
     for(v=0; v<8; v++) {
-      pg->data[component][pg->pos[component] + u * 8 + v] = matrix[u][v];
+      pg->data[component][pg->pos[component] + u * 8 + v] = (short)matrix[u][v];
     }
   pg->pos[component] += 8*8;  
 }
