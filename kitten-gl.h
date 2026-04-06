@@ -13,6 +13,17 @@
 
 #include "pg-window.h"
 
+typedef struct
+{
+  GLenum intformat;
+  GLenum format;
+  GLenum type;
+} PGTexFormat;
+
+static const PGTexFormat PG_TEX_FORMAT_F16 = { GL_R16F, GL_RED, GL_HALF_FLOAT },
+  PG_TEX_FORMAT_I16 = { GL_R16I, GL_RED_INTEGER, GL_SHORT },
+  PG_TEX_FORMAT_RGB = { GL_RGB, GL_RGB, GL_UNSIGNED_BYTE };
+
 typedef enum {
   PG_SHADER_VERTEX_PASSTHROUGH,
   PG_SHADER_FRAGMENT_PASSTHROUGH,
@@ -25,7 +36,7 @@ static struct {
   GLuint sh;
   GLenum type;
   const char *code;
-  GLenum output_format;
+  PGTexFormat output_format;
 } PGShaderBase[] = {
   [PG_SHADER_VERTEX_PASSTHROUGH] = {
     .type = GL_VERTEX_SHADER,
@@ -54,7 +65,7 @@ static struct {
   },
   [PG_SHADER_ZZ_TO_DCT] = {
     .type = GL_FRAGMENT_SHADER,
-    .output_format = GL_R16F,
+    .output_format = PG_TEX_FORMAT_F16,
     .code =
     "#version 300 es\n"
     "precision lowp float;\n"
@@ -95,7 +106,7 @@ static struct {
   },
   [PG_SHADER_DCT_TO_P] = {
     .type = GL_FRAGMENT_SHADER,
-    .output_format = GL_R16F,
+    .output_format = PG_TEX_FORMAT_F16,
     .code = "#version 300 es\n"
     "precision lowp float;\n"
     "precision lowp int;\n"
@@ -139,7 +150,7 @@ static struct {
   },
   [PG_SHADER_YUV_TO_RGB] = {
     .type = GL_FRAGMENT_SHADER,
-    .output_format = GL_RGB,
+    .output_format = PG_TEX_FORMAT_RGB,
     .code = "#version 300 es\n"
     "precision lowp float;\n"
     "precision highp int;\n" // NOTE: can use lowp on small images
@@ -368,7 +379,7 @@ typedef struct {
   GLuint framebuffer, texture;
 } PGFb;
 
-PGFb pg_make_framebuffer (GLenum format, int width, int height)
+PGFb pg_make_framebuffer (const PGTexFormat *f, int width, int height)
 {
   PGFb ret;
 
@@ -385,9 +396,9 @@ PGFb pg_make_framebuffer (GLenum format, int width, int height)
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, ret.texture);
   
-  glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0,
-      format == GL_RGB ? GL_RGB : GL_RED,
-      format == GL_RGB ? GL_UNSIGNED_BYTE : GL_HALF_FLOAT, NULL);
+  glTexImage2D(GL_TEXTURE_2D, 0, f->intformat, width, height, 0,
+      f->format,
+      f->type, NULL);
   
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -457,7 +468,7 @@ pg_draw_step_compile (PGDrawStep * ds) {
   pg_shader_program_set_uniforms (ds->shader_prog, ds->init.unis);
   
   if (ds->init.is_window == 0) {
-    ds->framebuffer = pg_make_framebuffer (PGShaderBase[ds->init.shader].output_format,
+    ds->framebuffer = pg_make_framebuffer (&PGShaderBase[ds->init.shader].output_format,
         ds->init.w, ds->init.h);
   }
 
