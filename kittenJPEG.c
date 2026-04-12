@@ -323,13 +323,14 @@ void parse_DHT(picture_t * const pic)
       uint8_t j;
       for(j=0; j<L[i]; j++)
       {
+        int next_index = pic->huff_tables[Tc][Th].nb_entries;
         uint8_t V=get1i(pic->data, &(pic->pos_in_file));
 #ifdef PRINT_DETAILS_HUFFMAN_TABLES
         printf("codeword %s (0x%x) (sz %u) -> %u (0x%x)\n", to_bin(codeword, i+1), codeword, i+1, V, V);
 #endif
-        pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].sz=i+1;
-        pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].codeword=codeword;
-        pic->huff_tables[Tc][Th].entries[pic->huff_tables[Tc][Th].nb_entries].decoded=V;
+        pic->huff_tables[Tc][Th].entries[next_index].sz=i+1;
+        pic->huff_tables[Tc][Th].entries[next_index].codeword=codeword;
+        pic->huff_tables[Tc][Th].entries[next_index].decoded=V;
         pic->huff_tables[Tc][Th].nb_entries++;
 			
         codeword++;
@@ -525,7 +526,7 @@ void copy_bitmap_data_remove_stuffing(picture_t * const pic)
 
 #include "pg.h"
 #include "do_the_rest.h"
-#include "Huffman.h"
+#include "Huffman-kitten.h"
 #include "kitten-gl.h"
 #include "ppm.h"
 

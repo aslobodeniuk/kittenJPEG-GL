@@ -4,14 +4,10 @@
    Version 69
 */
 
-// Compile with: gcc kittenJPEG.c -O3 -lX11 -lEGL -lGLESv2 -lm -o kit
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-
-#include "pg-window.h"
 
 typedef struct
 {
@@ -75,17 +71,6 @@ static struct {
     "uniform lowp isampler2D zigzagInpP;\n"
     "uniform float qTable[64];\n"
 
-    "const int zigzag8x8[64] = int[64](\n"
-    "  0,  1,  5,  6, 14, 15, 27, 28,\n"
-    "  2,  4,  7, 13, 16, 26, 29, 42,\n"
-    "  3,  8, 12, 17, 25, 30, 41, 43,\n"
-    "  9, 11, 18, 24, 31, 40, 44, 53,\n"
-    "  10, 19, 23, 32, 39, 45, 52, 54,\n"
-    "  20, 22, 33, 38, 46, 51, 55, 60,\n"
-    "  21, 34, 37, 47, 50, 56, 59, 61,\n"
-    "  35, 36, 48, 49, 57, 58, 62, 63\n"
-    ");\n"
-    
     "void main() {\n"
     "  ivec2 outPixel = ivec2(gl_FragCoord.xy);"
     // oook, so we need to fetch now a pixel of the same block,
@@ -95,7 +80,7 @@ static struct {
     // zzj represents position inside the block
     "  int zzj = outPixel.x & 63;\n"
     "  ivec2 pos = ivec2("
-    "    outPixel.x - zzj + zigzag8x8[zzj],"
+    "    outPixel.x, "
     "    outPixel.y"
     "  );\n"
     "  float dequant = qTable[zzj];\n"
@@ -188,6 +173,7 @@ static struct {
     "    return ivec2(in_bx + in_inbx, in_by);\n"
     "}\n"
 
+#if 0
     "    ivec2 remap_coordsY (int x, int y, int in_blox_per_row, int mcu_per_row)\n"
     "    {\n"
     "        int mcu_x = x / 16;\n"
@@ -205,6 +191,19 @@ static struct {
     "        int in_x = in_bx + in_inbx;\n"
     "        return ivec2(in_x, in_y);\n"
     "    }\n"
+#else
+    "ivec2 remap_coordsY(int cx, int cy, int blocks_per_row_uv, int mcu_per_row_uv)\n"
+    "{\n"
+    "\n"
+    "    int block_id = (cy >> 3) * mcu_per_row_uv + (cx >> 3);\n"
+    "\n"
+    "    int in_by = block_id / blocks_per_row_uv;\n"
+    "    int in_bx = (block_id % blocks_per_row_uv) * 64;\n"
+    "\n"
+    "    int in_inbx = (cy & 7) + 8 * (cx & 7);\n"
+    "    return ivec2(in_bx + in_inbx, in_by);\n"
+    "}\n"
+#endif
     
     "void main() {\n"
     "    int width = textureSize (yuvInpY, 0).x;\n"
@@ -218,6 +217,7 @@ static struct {
     "    float yy = texelFetch(yuvInpY, inPixelY, 0).r;\n"
     "    float u = texelFetch(yuvInpU, ivec2(inPixelCrCb.x, inPixelCrCb.y), 0).r;\n"
     "    float v = texelFetch(yuvInpV, ivec2(inPixelCrCb.x, inPixelCrCb.y), 0).r;\n"
+    
     "    fragColor = yuv_to_rgb (yy + 128.0, u, v);\n"
     "}\n",
   }
@@ -435,17 +435,14 @@ GLuint pg_create_texture(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    printf ("Creatin tex %dx%d\n", width, height);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R16I, width, height, 0, GL_RED_INTEGER, GL_SHORT, NULL);
     GLenum err;
     while ((err = glGetError()) != GL_NO_ERROR) {
       printf("OpenGL error: %x\n", err);
       exit (1);
     }
-    
-    GLint maxTexSize;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexSize);
-    printf("Max texture size: %d\n", maxTexSize);
-    
+        
     // unbind
     glBindTexture(GL_TEXTURE_2D, 0);
     return tex;
@@ -496,6 +493,7 @@ pg_init_jpegdec (PGX11Window  *pgw)
   printf("GL_VERSION  = %s\n", (const char*)glGetString(GL_VERSION));
   printf("GL_VENDOR   = %s\n", (const char*)glGetString(GL_VENDOR));
   printf("GL_RENDERER = %s\n", (const char*)glGetString(GL_RENDERER));
+  
 #if 0
   printf("GL_EXTENSIONS = %s\n", (const char*)glGetString(GL_EXTENSIONS));
 
@@ -507,7 +505,8 @@ pg_init_jpegdec (PGX11Window  *pgw)
   // TODO: don't require window,
   // get headless context from the display.
   // But then we mast be able to attach to windows context too...
-  pg_compile_all_shaders ();  
+  pg_compile_all_shaders ();
+
 }
 
 enum {
@@ -528,6 +527,8 @@ typedef struct {
   GLuint zigzagInpY; // FIXMI: 3 planes is lame, should take MCU stream
   GLuint zigzagInpU;
   GLuint zigzagInpV;
+
+  GLuint maxTexSize;
 } PGDrawen;
 
 #define PG_UNIFORM_TEX(name, tex) { name, (uint64_t)&(tex), PG_TEXTURE }
@@ -538,54 +539,66 @@ typedef struct {
 #define PGD_FB_TEXTURE(p, enm) p->order[enm].framebuffer.texture
 
 static int
-pg_jpegdec_build_programs (PGCtx *pg, PGDrawen *pgd, PGX11Window  *pgw) // Unite these structures ?
-{  
+pg_jpegdec_build_programs (JPEGGLCtx *ctx, PGDrawen *pgd, PGX11Window  *pgw) // Unite these structures ?
+{
+  glGetIntegerv(GL_MAX_TEXTURE_SIZE, &pgd->maxTexSize);
+  printf("Max texture size: %d\n", pgd->maxTexSize);
+
+  for (int i = 0; i < 3; i++) {
+    if (ctx->aligned[i].w > pgd->maxTexSize
+        || ctx->aligned[i].h > pgd->maxTexSize) {
+      printf("Unsupported texture allocation for component %d: %dx%d\n", i,
+          ctx->aligned[i].w, ctx->aligned[i].h);
+      return -1;
+    }
+  }
+  
   *pgd = (PGDrawen){
     .vao = pg_gen_target_buffer (),
-    .zigzagInpY = pg_create_texture(pg->aligned[0].w, pg->aligned[0].h),
-    .zigzagInpU = pg_create_texture(pg->aligned[1].w, pg->aligned[1].h),
-    .zigzagInpV = pg_create_texture(pg->aligned[2].w, pg->aligned[2].h),
+    .zigzagInpY = pg_create_texture(ctx->aligned[0].w, ctx->aligned[0].h), // just alloc
+    .zigzagInpU = pg_create_texture(ctx->aligned[1].w, ctx->aligned[1].h),
+    .zigzagInpV = pg_create_texture(ctx->aligned[2].w, ctx->aligned[2].h),
     .order = {
       [PG_DRAW_ZZ_TO_DCT_Y] = {
         .init = {
-          .w = pg->aligned[0].w,
-          .h = pg->aligned[0].h,
+          .w = ctx->aligned[0].w,
+          .h = ctx->aligned[0].h,
           .shader = PG_SHADER_ZZ_TO_DCT,
           .unis = {
             PG_UNIFORM_TEX ("zigzagInpP", pgd->zigzagInpY),
-            PG_UNIFORM_FARRAY ("qTable", &pg->qtable[0][0], 64),
+            PG_UNIFORM_FARRAY ("qTable", &ctx->qtable[0][0], 64),
             PG_UNIFORM_YEAH
           }
         }
       },
       [PG_DRAW_ZZ_TO_DCT_U] = (PGDrawStep){
         .init = {
-          .w = pg->aligned[1].w,
-          .h = pg->aligned[1].h,
+          .w = ctx->aligned[1].w,
+          .h = ctx->aligned[1].h,
           .shader = PG_SHADER_ZZ_TO_DCT,
           .unis = {
             PG_UNIFORM_TEX ("zigzagInpP", pgd->zigzagInpU),
-            PG_UNIFORM_FARRAY ("qTable", &pg->qtable[1][0], 64),
+            PG_UNIFORM_FARRAY ("qTable", &ctx->qtable[1][0], 64),
             PG_UNIFORM_YEAH
           }
         }
       },
       [PG_DRAW_ZZ_TO_DCT_V] = (PGDrawStep){
         .init = {
-          .w = pg->aligned[2].w,
-          .h = pg->aligned[2].h,
+          .w = ctx->aligned[2].w,
+          .h = ctx->aligned[2].h,
           .shader = PG_SHADER_ZZ_TO_DCT,
           .unis = {
             PG_UNIFORM_TEX ("zigzagInpP", pgd->zigzagInpV),
-            PG_UNIFORM_FARRAY ("qTable", &pg->qtable[2][0], 64 ),
+            PG_UNIFORM_FARRAY ("qTable", &ctx->qtable[2][0], 64 ),
             PG_UNIFORM_YEAH
           }
         }
       },
       [PG_DRAW_DCT_TO_Y] = (PGDrawStep){
         .init = {
-          .w = pg->aligned[0].w,
-          .h = pg->aligned[0].h,
+          .w = ctx->aligned[0].w,
+          .h = ctx->aligned[0].h,
           .shader = PG_SHADER_DCT_TO_P,
           .unis = {
             PG_UNIFORM_TEX ("dctInpP", PGD_FB_TEXTURE (pgd, PG_DRAW_ZZ_TO_DCT_Y)),
@@ -595,8 +608,8 @@ pg_jpegdec_build_programs (PGCtx *pg, PGDrawen *pgd, PGX11Window  *pgw) // Unite
       },
       [PG_DRAW_DCT_TO_U] = (PGDrawStep){
         .init = {
-          .w = pg->aligned[1].w,
-          .h = pg->aligned[1].h,
+          .w = ctx->aligned[1].w,
+          .h = ctx->aligned[1].h,
           .shader = PG_SHADER_DCT_TO_P,
           .unis = {
             PG_UNIFORM_TEX ("dctInpP", PGD_FB_TEXTURE (pgd, PG_DRAW_ZZ_TO_DCT_U)),
@@ -606,8 +619,8 @@ pg_jpegdec_build_programs (PGCtx *pg, PGDrawen *pgd, PGX11Window  *pgw) // Unite
       },
       [PG_DRAW_DCT_TO_V] = (PGDrawStep){
         .init = {
-          .w = pg->aligned[2].w,
-          .h = pg->aligned[2].h,
+          .w = ctx->aligned[2].w,
+          .h = ctx->aligned[2].h,
           .shader = PG_SHADER_DCT_TO_P,
           .unis = {
             PG_UNIFORM_TEX ("dctInpP", PGD_FB_TEXTURE (pgd, PG_DRAW_ZZ_TO_DCT_V)),
@@ -617,18 +630,18 @@ pg_jpegdec_build_programs (PGCtx *pg, PGDrawen *pgd, PGX11Window  *pgw) // Unite
       },
       [PG_DRAW_YUV_TO_RGB] = (PGDrawStep){
         .init = {
-          .w = pg->proper.w,
-          .h = pg->proper.h,
+          .w = ctx->proper.w,
+          .h = ctx->proper.h,
           .shader = PG_SHADER_YUV_TO_RGB,
           .unis = {
             PG_UNIFORM_TEX ("yuvInpY", PGD_FB_TEXTURE (pgd, PG_DRAW_DCT_TO_Y)),
             PG_UNIFORM_TEX ("yuvInpU", PGD_FB_TEXTURE (pgd, PG_DRAW_DCT_TO_U)),
             PG_UNIFORM_TEX ("yuvInpV", PGD_FB_TEXTURE (pgd, PG_DRAW_DCT_TO_V)),
-            PG_UNIFORM_INT ("outHeight", pg->proper.h),
-            PG_UNIFORM_INT ("inBloxPerRowY", pg->aligned[0].w / 64),
-            PG_UNIFORM_INT ("inBloxPerRowUV", pg->aligned[1].w / 64),
-            PG_UNIFORM_INT ("outMCUPerRowY", pg->proper.w / 16),
-            PG_UNIFORM_INT ("outMCUPerRowUV", pg->proper.w / 16),
+            PG_UNIFORM_INT ("outHeight", ctx->proper.h),
+            PG_UNIFORM_INT ("inBloxPerRowY", ctx->aligned[0].w / 64),
+            PG_UNIFORM_INT ("inBloxPerRowUV", ctx->aligned[1].w / 64),
+            PG_UNIFORM_INT ("outMCUPerRowY", ctx->proper.w / 8),
+            PG_UNIFORM_INT ("outMCUPerRowUV", ctx->proper.w / 16),
             PG_UNIFORM_YEAH
           }
         }
@@ -679,7 +692,7 @@ static void pg_perf_end (uint64_t start, const char *phase)
 }
 
 static int
-pg_jpegdec_decode (PGCtx *pg, PGDrawen *pgd)
+pg_jpegdec_decode (JPEGGLCtx *ctx, PGDrawen *pgd)
 {
 #define BENCH 1
   
@@ -687,10 +700,10 @@ pg_jpegdec_decode (PGCtx *pg, PGDrawen *pgd)
   glFinish();
   uint64_t start = pg_perf_start ();
 #endif
-  
-  pg_upload_to_texture (pgd->zigzagInpY, pg->aligned[0].w, pg->aligned[0].h, pg->data[0]);
-  pg_upload_to_texture (pgd->zigzagInpU, pg->aligned[1].w, pg->aligned[1].h, pg->data[1]);
-  pg_upload_to_texture (pgd->zigzagInpV, pg->aligned[2].w, pg->aligned[2].h, pg->data[2]);
+
+  pg_upload_from_libjpeg (pgd->zigzagInpY, ctx, 0);
+  pg_upload_from_libjpeg (pgd->zigzagInpU, ctx, 1);
+  pg_upload_from_libjpeg (pgd->zigzagInpV, ctx, 2);
 
 #if 0
   pg_perf_end (start, "upload");
@@ -715,7 +728,7 @@ pg_jpegdec_draw_to_window (PGDrawen *pgd)
 
 #define KITTEN_WINDOW_TITLE "JPEG decoder shader : "
 
-void kitten_gl_show (PGCtx *pg, const char* filename) {
+void kitten_gl_show (JPEGGLCtx *ctx, const char* filename) {
   PGDrawen pgd;
   PGX11Window pgw; // unite these structures?
   char title[256] = KITTEN_WINDOW_TITLE;
@@ -726,11 +739,12 @@ void kitten_gl_show (PGCtx *pg, const char* filename) {
   pg_window_bind_context_egl (&pgw);
   
   pg_init_jpegdec (&pgw);
-  pg_jpegdec_build_programs (pg, &pgd, &pgw);
-  
+  pg_jpegdec_build_programs (ctx, &pgd, &pgw);
+
+  pg_jpegdec_decode (ctx, &pgd);
+
   while (pg_window_loop (&pgw)) {
 
-    pg_jpegdec_decode (pg, &pgd);
     pg_jpegdec_draw_to_window (&pgd);
     pg_window_swap_buffers (&pgw);
   }

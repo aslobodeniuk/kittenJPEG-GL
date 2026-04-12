@@ -62,7 +62,7 @@ static void PG_COPY_QTABL (PGCtx *pg, int component, quantization_table_t qt)
   }
 }
 
-unsigned int
+static unsigned int
 pg_bytes_hash (const void* data, int size)
 {
   const signed char *p, *e;
