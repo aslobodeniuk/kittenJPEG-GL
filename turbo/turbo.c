@@ -124,6 +124,80 @@ uint8_t * _read_entire_file (const char *filename, long *size)
   return ret;
 }
 
+static int
+pg_init_turbo (JPEGGLCtx *ctx)
+{
+  struct jpeg_error_mgr jerr = {0};
+  ctx->c.err = jpeg_std_error(&jerr);
+  struct jpeg_source_mgr jsrc =
+  {
+    .init_source = _turbo_init_source,
+    .fill_input_buffer = _fill_input_buffer,
+    .skip_input_data = _skip_input_data,
+    .resync_to_restart = _resync_to_restart,
+    .term_source = _term_source
+  };
+  
+  jpeg_create_decompress(&ctx->c);
+
+  ctx->c.src = &jsrc;
+}
+
+// needs gl to be bind, also needs some output framebuffer,
+// or an output texture?
+int pg_jpegdec_init (JPEGGLCtx *ctx, PGDrawen *pgd, PGX11Window  *pgw)
+{  
+  pg_init_jpegdec ();
+  pg_jpegdec_build_programs (ctx, pgd, pgw);
+
+  return 0; // TODO err
+}
+
+static int pg_jpegdec_parse_data_turbo (JPEGGLCtx *ctx, uint8_t *data, long size)
+{
+  uint64_t start = pg_perf_start ();
+
+  ctx->c.src->next_input_byte = data;
+  ctx->c.src->bytes_in_buffer = size;
+    
+  if (jpeg_read_header(&ctx->c, TRUE) != JPEG_HEADER_OK)
+    die("jpeg_read_header failed");
+
+  ctx->coef_arrays = jpeg_read_coefficients(&ctx->c);
+  if (!ctx->coef_arrays) die("jpeg_read_coefficients failed");
+  pg_perf_end (start, "turbo parse");
+
+  printf("image: %ux%u, components=%d\n",
+      ctx->c.image_width, ctx->c.image_height, ctx->c.num_components);
+
+  for (int comp = 0; comp < ctx->c.num_components; comp++) {
+    const jpeg_component_info *compptr = &ctx->c.comp_info[comp];
+    
+    ctx->aligned[comp].w = compptr->width_in_blocks * 8;
+    ctx->aligned[comp].h = compptr->height_in_blocks * 8;
+
+    const JQUANT_TBL *qt = ctx->c.quant_tbl_ptrs[ctx->c.comp_info[comp].quant_tbl_no];
+    for(int u=0; u<8; u++) {
+      for(int v=0; v<8; v++) {
+        ctx->qtable[comp][u * 8 + v] = qt->quantval[u * 8 + v];
+      }
+    }
+  }
+  ctx->proper.w = ctx->c.image_width;
+  ctx->proper.h = ctx->c.image_height;
+  
+  return 0; // TODO err
+}
+
+static void
+pg_jpegdec_close (JPEGGLCtx *ctx)
+{
+  // TODO: close framebuffers and textures!!
+  
+  jpeg_finish_decompress(&ctx->c);
+  jpeg_destroy_decompress(&ctx->c);
+}
+
 int main(int argc, char **argv)
 {
   uint8_t *data;
@@ -136,67 +210,35 @@ int main(int argc, char **argv)
   data = _read_entire_file (filename, &size);  
   if (!data) die("failed to open input file");
   // ------------------------------
-  
+
+  PGDrawen pgd;
+  PGX11Window pgw; // unite these structures?
   JPEGGLCtx ctx;
-  struct jpeg_error_mgr jerr = {0};
-  ctx.c.err = jpeg_std_error(&jerr);
-  struct jpeg_source_mgr jsrc =
-  {
-    .init_source = _turbo_init_source,
-    .fill_input_buffer = _fill_input_buffer,
-    .skip_input_data = _skip_input_data,
-    .resync_to_restart = _resync_to_restart,
-    .term_source = _term_source
-  };
+
+#define KITTEN_WINDOW_TITLE "JPEG decoder shader : "
+  char title[256] = KITTEN_WINDOW_TITLE;
+  strncat (title, filename, sizeof(title) - sizeof (KITTEN_WINDOW_TITLE) - 1);
+
+  // Split to things?
+  pg_window_open_x11 (&pgw, 1024, 1024, title);
+  pg_window_bind_context_egl (&pgw);
+
+  pg_init_turbo (&ctx);
+
+  pg_jpegdec_parse_data_turbo (&ctx, data, size);
+
+  pg_jpegdec_init (&ctx, &pgd, &pgw); // needs dimensions to build programs
   
-  // ----------- INIT CPU DEC
-  jpeg_create_decompress(&ctx.c);
+  pg_jpegdec_decode (&ctx, &pgd);
 
-  ctx.c.src = &jsrc;
-  // ------------------------
-
-  // ------------------------ PARSE & DEC CPU
-  {
-    uint64_t start = pg_perf_start ();
-
-    ctx.c.src->next_input_byte = data;
-    ctx.c.src->bytes_in_buffer = size;
-    
-    if (jpeg_read_header(&ctx.c, TRUE) != JPEG_HEADER_OK)
-      die("jpeg_read_header failed");
-
-    ctx.coef_arrays = jpeg_read_coefficients(&ctx.c);
-    if (!ctx.coef_arrays) die("jpeg_read_coefficients failed");
-    pg_perf_end (start, "turbo parse");
+  while (pg_window_loop (&pgw)) {
+    pg_jpegdec_draw_to_window (&pgd);
+    pg_window_swap_buffers (&pgw);
   }
 
-  printf("image: %ux%u, components=%d\n",
-      ctx.c.image_width, ctx.c.image_height, ctx.c.num_components);
+  pg_window_close_x11 (&pgw);
 
-  for (int comp = 0; comp < ctx.c.num_components; comp++) {
-    const jpeg_component_info *compptr = &ctx.c.comp_info[comp];
-    
-    ctx.aligned[comp].w = compptr->width_in_blocks * 8;
-    ctx.aligned[comp].h = compptr->height_in_blocks * 8;
-
-    const JQUANT_TBL *qt = ctx.c.quant_tbl_ptrs[ctx.c.comp_info[comp].quant_tbl_no];
-    for(int u=0; u<8; u++) {
-      for(int v=0; v<8; v++) {
-        ctx.qtable[comp][u * 8 + v] = qt->quantval[u * 8 + v];
-      }
-    }
-  }
-  ctx.proper.w = ctx.c.image_width;
-  ctx.proper.h = ctx.c.image_height;
-  // ----------------------------------------
-
-  kitten_gl_show (&ctx, filename);
-
-  // ----------- CLOSE DEC
-  jpeg_finish_decompress(&ctx.c);
-  jpeg_destroy_decompress(&ctx.c);
-  // -----------
-
+  pg_jpegdec_close (&ctx);
   free(data);
   return 0;
 }

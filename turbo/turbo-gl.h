@@ -488,7 +488,7 @@ pg_draw_step_draw (PGDrawStep * ds, GLuint vao) {
 }
 
 static int
-pg_init_jpegdec (PGX11Window  *pgw)
+pg_init_jpegdec ()
 {
   printf("GL_VERSION  = %s\n", (const char*)glGetString(GL_VERSION));
   printf("GL_VENDOR   = %s\n", (const char*)glGetString(GL_VENDOR));
@@ -496,10 +496,6 @@ pg_init_jpegdec (PGX11Window  *pgw)
   
 #if 0
   printf("GL_EXTENSIONS = %s\n", (const char*)glGetString(GL_EXTENSIONS));
-
-  printf("EGL_VERSION  = %s\n", eglQueryString(pgw->x_dpy, EGL_VERSION));
-  printf("EGL_VENDOR   = %s\n", eglQueryString(pgw->x_dpy, EGL_VENDOR));
-  printf("EGL_EXT      = %s\n", eglQueryString(pgw->x_dpy, EGL_EXTENSIONS));
 #endif
   
   // TODO: don't require window,
@@ -724,30 +720,4 @@ static int
 pg_jpegdec_draw_to_window (PGDrawen *pgd)
 {
   pg_draw_step_draw (&pgd->order[PG_DRAW_RGB_TO_WINDOW], pgd->vao);
-}
-
-#define KITTEN_WINDOW_TITLE "JPEG decoder shader : "
-
-void kitten_gl_show (JPEGGLCtx *ctx, const char* filename) {
-  PGDrawen pgd;
-  PGX11Window pgw; // unite these structures?
-  char title[256] = KITTEN_WINDOW_TITLE;
-  strncat (title, filename, sizeof(title) - sizeof (KITTEN_WINDOW_TITLE) - 1);
-  
-  // Split to things?
-  pg_window_open_x11 (&pgw, 1024, 1024, title);
-  pg_window_bind_context_egl (&pgw);
-  
-  pg_init_jpegdec (&pgw);
-  pg_jpegdec_build_programs (ctx, &pgd, &pgw);
-
-  pg_jpegdec_decode (ctx, &pgd);
-
-  while (pg_window_loop (&pgw)) {
-
-    pg_jpegdec_draw_to_window (&pgd);
-    pg_window_swap_buffers (&pgw);
-  }
-
-  pg_window_close_x11 (&pgw);
 }
