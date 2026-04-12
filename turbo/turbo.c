@@ -39,7 +39,6 @@ void pg_upload_from_libjpeg (GLuint tex, JPEGGLCtx *ctx, int comp)
   printf("component %d: blocks %dx%d, quant_tbl_no=%d\n",
       comp, blocks_w, blocks_h, compptr->quant_tbl_no);
 
-#if 1
   glBindTexture(GL_TEXTURE_2D, tex);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
   
@@ -60,48 +59,109 @@ void pg_upload_from_libjpeg (GLuint tex, JPEGGLCtx *ctx, int comp)
         8,
         GL_RED_INTEGER, GL_SHORT, (const void*)&row[0][0]);
   }
-#else
-    
-  for (int by = 0; by < blocks_h; by++) {
-    // NOTE: access_virt_barray is a function pointer in cinfo.mem
-    JBLOCKARRAY row = (ctx->c.mem->access_virt_barray)(
-      (j_common_ptr)&ctx->c, ctx->coef_arrays[comp], by, 1, FALSE);
-
-    for (int bx = 0; bx < blocks_w; bx++) {
-      JCOEFPTR block = row[0][bx];
-
-      if (by == 0 && bx < 4) {
-        printf("  comp %d block(%d,%d) DC=%d\n", comp, bx, by, (int)block[0]);
-      }
-      
-    }
-  }
-#endif
 }
 
 #include "turbo-gl.h"
 
-int main(int argc, char **argv) {
+static void
+_turbo_init_source (j_decompress_ptr cinfo)
+{
+  printf ("init_source\n");
+}
 
+static boolean
+_fill_input_buffer (j_decompress_ptr cinfo)
+{
+  /* Assume error */
+  return FALSE;
+}
+
+static void
+_skip_input_data (j_decompress_ptr cinfo, long num_bytes)
+{
+  JPEGGLCtx *ctx = (JPEGGLCtx *)cinfo;
+
+  printf ("skip %ld bytes\n", num_bytes);
+
+  if (num_bytes > 0 && cinfo->src->bytes_in_buffer >= num_bytes) {
+    cinfo->src->next_input_byte += (size_t) num_bytes;
+    cinfo->src->bytes_in_buffer -= (size_t) num_bytes;
+  }
+}
+
+static boolean
+_resync_to_restart (j_decompress_ptr cinfo, int desired)
+{
+  printf ("resync_to_start (%d)\n", desired);
+  return TRUE;
+}
+
+static void
+_term_source (j_decompress_ptr cinfo)
+{
+  printf ("term_source\n");
+  return;
+}
+
+uint8_t * _read_entire_file (const char *filename, long *size)
+{
+  FILE *fp = fopen(filename, "rb");
+
+  if (NULL == fp)
+    return NULL;
+  
+  fseek(fp, 0, SEEK_END);
+  *size = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+
+  uint8_t *ret = malloc(*size);
+  if (1 != fread(ret, *size, 1, fp)) {
+    free (ret);
+    ret = NULL;
+  }
+
+  fclose(fp);
+  return ret;
+}
+
+int main(int argc, char **argv)
+{
+  uint8_t *data;
+  long size = 0;
+  
   // ------------ FILENAME AND ARGS
   if (argc != 2) die("usage: jpeg_extract_dct_coeffs <input.jpg>");
   const char *filename = argv[1];
-  FILE *fp = fopen(filename, "rb");
-  if (!fp) die("failed to open input file");
+
+  data = _read_entire_file (filename, &size);  
+  if (!data) die("failed to open input file");
   // ------------------------------
   
   JPEGGLCtx ctx;
-  struct jpeg_error_mgr jerr;
+  struct jpeg_error_mgr jerr = {0};
   ctx.c.err = jpeg_std_error(&jerr);
-
+  struct jpeg_source_mgr jsrc =
+  {
+    .init_source = _turbo_init_source,
+    .fill_input_buffer = _fill_input_buffer,
+    .skip_input_data = _skip_input_data,
+    .resync_to_restart = _resync_to_restart,
+    .term_source = _term_source
+  };
+  
   // ----------- INIT CPU DEC
   jpeg_create_decompress(&ctx.c);
-  jpeg_stdio_src(&ctx.c, fp);
+
+  ctx.c.src = &jsrc;
   // ------------------------
 
   // ------------------------ PARSE & DEC CPU
   {
     uint64_t start = pg_perf_start ();
+
+    ctx.c.src->next_input_byte = data;
+    ctx.c.src->bytes_in_buffer = size;
+    
     if (jpeg_read_header(&ctx.c, TRUE) != JPEG_HEADER_OK)
       die("jpeg_read_header failed");
 
@@ -137,6 +197,6 @@ int main(int argc, char **argv) {
   jpeg_destroy_decompress(&ctx.c);
   // -----------
 
-  fclose(fp);
+  free(data);
   return 0;
 }
